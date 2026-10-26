@@ -5,6 +5,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -36,7 +37,24 @@ var (
 	helpStyle   = lipgloss.NewStyle().Faint(true)
 	cursorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true)
 	plainStyle  = lipgloss.NewStyle()
+	okStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	failStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 )
+
+// ScanFunc produces a fresh Inventory. The TUI calls it asynchronously and
+// never learns how discovery works.
+type ScanFunc func(ctx context.Context) *agents.Inventory
+
+// Option configures a Model.
+type Option func(*Model)
+
+// WithScanner enables discovery: a scan runs on startup and "r" rescans.
+func WithScanner(scan ScanFunc) Option {
+	return func(m *Model) { m.scan = scan }
+}
+
+// inventoryMsg delivers a completed scan to Update.
+type inventoryMsg struct{ inv *agents.Inventory }
 
 // Model is the root Bubble Tea model.
 type Model struct {
@@ -45,23 +63,45 @@ type Model struct {
 	width     int
 	height    int
 	inventory *agents.Inventory
+	scan      ScanFunc
+	scanning  bool
 	quitting  bool
 }
 
 // New returns a root model with the default placeholder navigation.
-func New() Model {
-	return Model{
+func New(opts ...Option) Model {
+	m := Model{
 		sections:  DefaultSections,
 		inventory: agents.NewInventory(),
 	}
+	for _, opt := range opts {
+		opt(&m)
+	}
+	m.scanning = m.scan != nil
+	return m
 }
 
 // Init implements tea.Model.
-func (m Model) Init() tea.Cmd { return nil }
+func (m Model) Init() tea.Cmd {
+	if m.scan == nil {
+		return nil
+	}
+	return m.scanCmd()
+}
+
+func (m Model) scanCmd() tea.Cmd {
+	scan := m.scan
+	return func() tea.Msg { return inventoryMsg{inv: scan(context.Background())} }
+}
 
 // Update implements tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case inventoryMsg:
+		m.scanning = false
+		if msg.inv != nil {
+			m.inventory = msg.inv
+		}
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 	case tea.KeyMsg:
@@ -76,6 +116,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "down", "j":
 			if m.cursor < len(m.sections)-1 {
 				m.cursor++
+			}
+		case "r":
+			if m.scan != nil && !m.scanning {
+				m.scanning = true
+				return m, m.scanCmd()
 			}
 		case "enter":
 			// Navigation targets are implemented by later issues (#4+).
@@ -94,7 +139,9 @@ func (m Model) View() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("BeeChief 🐝"))
 	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("Bees discovered: %d\n\n", m.inventory.Total()))
+	b.WriteString(fmt.Sprintf("Bees discovered: %d\n", m.inventory.Total()))
+	b.WriteString(m.hiveSummary())
+	b.WriteString("\n")
 
 	for i, s := range m.sections {
 		if i == m.cursor {
@@ -106,6 +153,25 @@ func (m Model) View() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("↑/↓ move · enter select · q quit"))
+	b.WriteString(helpStyle.Render("↑/↓ move · enter select · r rescan · q quit"))
+	return b.String()
+}
+
+// hiveSummary renders one line per Hive, marking failed Hives visibly.
+func (m Model) hiveSummary() string {
+	var b strings.Builder
+	if m.scanning {
+		b.WriteString(helpStyle.Render("Scanning hives…"))
+		b.WriteString("\n")
+	}
+	for _, h := range m.inventory.Hives {
+		st := m.inventory.Status[h]
+		if st.OK() {
+			b.WriteString(okStyle.Render(fmt.Sprintf("  ✓ %s: %d bees", h, len(m.inventory.ByHive[h]))))
+		} else {
+			b.WriteString(failStyle.Render(fmt.Sprintf("  ✗ %s: %v", h, st.Err)))
+		}
+		b.WriteString("\n")
+	}
 	return b.String()
 }
