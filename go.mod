@@ -5,6 +5,7 @@ go 1.22.2
 require (
 	github.com/charmbracelet/bubbletea v1.1.0
 	github.com/charmbracelet/lipgloss v0.13.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
