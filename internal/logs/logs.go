@@ -27,6 +27,7 @@ const (
 	SourceDocker     SourceKind = "docker"
 	SourceGateway    SourceKind = "openclaw"
 	SourceAgent      SourceKind = "agent"
+	SourceEvents     SourceKind = "events"
 )
 
 // AllSources lists the supported log source types in display order.
@@ -35,6 +36,7 @@ var AllSources = []SourceKind{
 	SourceDocker,
 	SourceGateway,
 	SourceAgent,
+	SourceEvents,
 }
 
 // Level classifies a log line's severity.
@@ -107,6 +109,8 @@ func AdapterFor(kind SourceKind) Source {
 		return gatewaySource{}
 	case SourceAgent:
 		return agentSource{}
+	case SourceEvents:
+		return eventsSource{}
 	default:
 		return journalctlSource{}
 	}
@@ -192,6 +196,28 @@ func (agentSource) Command(target string, _ int) (string, []string) {
 
 func (s agentSource) Fetch(ctx context.Context, exec hosts.Execution, target string, tail int) (*Result, error) {
 	return runSource(ctx, exec, s, target, tail)
+}
+
+type eventsSource struct{}
+
+func (eventsSource) Kind() SourceKind { return SourceEvents }
+
+func (eventsSource) Command(target string, tail int) (string, []string) {
+	tail = normalizeTail(tail)
+	args := []string{"events", "--limit", fmt.Sprintf("%d", tail)}
+	if t := strings.TrimSpace(target); t != "" && !strings.HasPrefix(t, "-") {
+		args = append(args, "--filter", t)
+	}
+	return "beechief", args
+}
+
+func (s eventsSource) Fetch(_ context.Context, _ hosts.Execution, target string, tail int) (*Result, error) {
+	return &Result{
+		Source:  SourceEvents,
+		Target:  target,
+		Command: CommandString(SourceEvents, target, tail),
+		Entries: nil,
+	}, nil
 }
 
 func runSource(ctx context.Context, exec hosts.Execution, src Source, target string, tail int) (*Result, error) {

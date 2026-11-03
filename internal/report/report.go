@@ -17,8 +17,9 @@ import (
 	"github.com/meistro57/beechief/internal/services"
 )
 
-// DefaultVersion is the BeeChief version reported when not overridden at build time.
-const DefaultVersion = "v0.4.0"
+// DefaultVersion is the BeeChief version reported when not overridden at build time
+// via -ldflags "-X github.com/meistro57/beechief/internal/report.DefaultVersion=...".
+var DefaultVersion = "v0.5.0"
 
 // BeeDiagnostic summarizes one Bee's Comb (skills) and Workshop state for a Honey Report.
 type BeeDiagnostic struct {
@@ -276,6 +277,24 @@ func RenderMarkdown(r *HoneyReport) string {
 		}
 
 		if h.Services != nil {
+			caps := h.Services.Capabilities
+			if caps.OS != "" || caps.OpenClaw.Installed {
+				b.WriteString("#### Detected Host & OpenClaw Capabilities\n\n")
+				if caps.OS != "" {
+					fmt.Fprintf(&b, "- **Platform**: `%s` (`%s`, kernel `%s`)\n", caps.OS, firstOr(caps.Arch, "unknown"), firstOr(caps.Kernel, "unknown"))
+				}
+				fmt.Fprintf(&b, "- **Subsystems**: systemd=`%v` (user=`%v`), journalctl=`%v`, docker=`%v` (compose=`%v`), ollama=`%v`\n",
+					caps.SystemdAvailable, caps.SystemdUserAvailable, caps.JournalctlAvailable,
+					caps.DockerAvailable, caps.DockerComposeAvailable, caps.OllamaAvailable)
+				if caps.OpenClaw.Installed {
+					oc := caps.OpenClaw
+					fmt.Fprintf(&b, "- **OpenClaw CLI Features**: skills=`%v`, check=`%v`, workshop=`%v`, models=`%v`, health=`%v`, logs=`%v`\n",
+						oc.SupportsSkills, oc.SupportsSkillCheck, oc.SupportsWorkshop,
+						oc.SupportsModelsStatus, oc.SupportsGatewayHealth, oc.SupportsLogs)
+				}
+				b.WriteString("\n")
+			}
+
 			// Model / Provider Summary
 			ms := h.Services.Models
 			b.WriteString("#### Model & Provider Summary\n\n")

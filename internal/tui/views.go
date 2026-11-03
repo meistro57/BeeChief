@@ -10,6 +10,7 @@ import (
 	"github.com/meistro57/beechief/internal/config"
 	"github.com/meistro57/beechief/internal/diagnostics"
 	"github.com/meistro57/beechief/internal/logs"
+	"github.com/meistro57/beechief/internal/openclaw"
 	"github.com/meistro57/beechief/internal/services"
 	"github.com/meistro57/beechief/internal/swarm"
 )
@@ -35,6 +36,126 @@ func (m *Model) syncSelectionAfterScan() {
 
 func (m Model) filteredBees() []agents.Bee {
 	return m.inventory.FilterBees(m.filterQuery)
+}
+
+func (m Model) filteredSkills() []openclaw.Skill {
+	if m.skillList == nil {
+		return nil
+	}
+	q := strings.ToLower(strings.TrimSpace(m.skillFilterQuery))
+	if q == "" {
+		return m.skillList.Skills
+	}
+	var out []openclaw.Skill
+	for _, sk := range m.skillList.Skills {
+		state := strings.ToLower(sk.StateLabel())
+		if strings.Contains(strings.ToLower(sk.Name), q) ||
+			strings.Contains(strings.ToLower(sk.Description), q) ||
+			strings.Contains(strings.ToLower(sk.Source), q) ||
+			strings.Contains(state, q) {
+			out = append(out, sk)
+		}
+	}
+	return out
+}
+
+func (m Model) listViewportRows() int {
+	if m.height <= 0 {
+		return 18
+	}
+	rows := m.height - 14
+	if rows < 4 {
+		rows = 4
+	}
+	if rows > 35 {
+		rows = 35
+	}
+	return rows
+}
+
+func visibleSliceBounds(total, cursor, maxRows int) (start, end int) {
+	if total <= 0 {
+		return 0, 0
+	}
+	if maxRows <= 0 || total <= maxRows {
+		return 0, total
+	}
+	if cursor < 0 {
+		cursor = 0
+	}
+	if cursor >= total {
+		cursor = total - 1
+	}
+	half := maxRows / 2
+	start = cursor - half
+	if start < 0 {
+		start = 0
+	}
+	end = start + maxRows
+	if end > total {
+		end = total
+		start = end - maxRows
+		if start < 0 {
+			start = 0
+		}
+	}
+	return start, end
+}
+
+func (m Model) renderTitle(s string) string {
+	if m.noColor {
+		return s
+	}
+	return titleStyle.Render(s)
+}
+
+func (m Model) renderTagline(s string) string {
+	if m.noColor {
+		return s
+	}
+	return taglineStyle.Render(s)
+}
+
+func (m Model) renderHeader(s string) string {
+	if m.noColor {
+		return s
+	}
+	return headerStyle.Render(s)
+}
+
+func (m Model) renderHelp(s string) string {
+	if m.noColor {
+		return s
+	}
+	return helpStyle.Render(s)
+}
+
+func (m Model) renderCursor(s string) string {
+	if m.noColor {
+		return s
+	}
+	return cursorStyle.Render(s)
+}
+
+func (m Model) renderOK(s string) string {
+	if m.noColor {
+		return s
+	}
+	return okStyle.Render(s)
+}
+
+func (m Model) renderWarn(s string) string {
+	if m.noColor {
+		return s
+	}
+	return warnStyle.Render(s)
+}
+
+func (m Model) renderFail(s string) string {
+	if m.noColor {
+		return s
+	}
+	return failStyle.Render(s)
 }
 
 func (m *Model) activeBee() *agents.Bee {
@@ -337,37 +458,43 @@ func (m Model) View() string {
 	if m.quitting {
 		return ""
 	}
+	var out string
 	switch m.screen {
 	case screenSwarmOverview:
-		return m.viewSwarmOverview()
+		out = m.viewSwarmOverview()
 	case screenBees:
-		return m.viewBees()
+		out = m.viewBees()
 	case screenBeeDetail:
-		return m.viewBeeDetail()
+		out = m.viewBeeDetail()
 	case screenComb:
-		return m.viewComb()
+		out = m.viewComb()
 	case screenSelfReview:
-		return m.viewSelfReview()
+		out = m.viewSelfReview()
 	case screenTroubleshooting:
-		return m.viewTroubleshooting()
+		out = m.viewTroubleshooting()
 	case screenServices:
-		return m.viewServices()
+		out = m.viewServices()
 	case screenLogs:
-		return m.viewLogs()
+		out = m.viewLogs()
 	case screenSettings:
-		return m.viewSettings()
+		out = m.viewSettings()
 	default:
-		return m.viewRoot()
+		out = m.viewRoot()
 	}
+	if m.width > 0 && m.height > 0 && (m.width < 50 || m.height < 12) {
+		notice := m.renderWarn(fmt.Sprintf("[Compact terminal %dx%d — resize to ≥60x16 for full view]", m.width, m.height))
+		out = notice + "\n" + out
+	}
+	return out
 }
 
 func (m Model) viewRoot() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("⬢ BeeChief 👑🐝"))
+	b.WriteString(m.renderTitle("⬢ BeeChief 👑🐝"))
 	b.WriteString("  ")
-	b.WriteString(taglineStyle.Render("THE SWARM COMMAND CENTER"))
+	b.WriteString(m.renderTagline("THE SWARM COMMAND CENTER"))
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("One terminal. Every hive. Discover, review & diagnose your agents."))
+	b.WriteString(m.renderHelp("One terminal. Every hive. Discover, review & diagnose your agents."))
 	b.WriteString("\n\n")
 	b.WriteString(fmt.Sprintf("Bees discovered: %d\n", m.inventory.Total()))
 	b.WriteString(m.hiveSummary())
@@ -375,8 +502,8 @@ func (m Model) viewRoot() string {
 
 	for i, s := range m.sections {
 		if i == m.cursor {
-			b.WriteString(cursorStyle.Render("> " + s.Title))
-			b.WriteString("  " + helpStyle.Render("— "+s.Blurb))
+			b.WriteString(m.renderCursor("> " + s.Title))
+			b.WriteString("  " + m.renderHelp("— "+s.Blurb))
 		} else {
 			b.WriteString(plainStyle.Render("  " + s.Title))
 		}
@@ -385,12 +512,12 @@ func (m Model) viewRoot() string {
 
 	if m.statusBanner != "" {
 		b.WriteString("\n")
-		b.WriteString(warnStyle.Render(m.statusBanner))
+		b.WriteString(m.renderWarn(m.statusBanner))
 		b.WriteString("\n")
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("↑/↓ move · enter select · r rescan · q quit"))
+	b.WriteString(m.renderHelp("↑/↓ move · enter select · r rescan · q quit"))
 	return b.String()
 }
 
@@ -398,15 +525,15 @@ func (m Model) viewRoot() string {
 func (m Model) hiveSummary() string {
 	var b strings.Builder
 	if m.scanning {
-		b.WriteString(helpStyle.Render("Scanning hives…"))
+		b.WriteString(m.renderHelp("Scanning hives…"))
 		b.WriteString("\n")
 	}
 	for _, h := range m.inventory.Hives {
 		st := m.inventory.Status[h]
 		if st.OK() {
-			b.WriteString(okStyle.Render(fmt.Sprintf("  ✓ %s: %d bees", h, len(m.inventory.ByHive[h]))))
+			b.WriteString(m.renderOK(fmt.Sprintf("  ✓ %s: %d bees", h, len(m.inventory.ByHive[h]))))
 		} else {
-			b.WriteString(failStyle.Render(fmt.Sprintf("  ✗ %s: %v", h, st.Err)))
+			b.WriteString(m.renderFail(fmt.Sprintf("  ✗ %s: %v", h, st.Err)))
 		}
 		b.WriteString("\n")
 	}
@@ -415,7 +542,7 @@ func (m Model) hiveSummary() string {
 
 func (m Model) viewSwarmOverview() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("BeeChief 🐝 — Swarm Overview"))
+	b.WriteString(m.renderTitle("BeeChief 🐝 — Swarm Overview"))
 	b.WriteString("\n")
 
 	lastScan := "never"
@@ -429,7 +556,7 @@ func (m Model) viewSwarmOverview() string {
 	fmt.Fprintf(&b, "Total Hives: %d · Total Bees: %d · Last scan: %s (%s)\n\n",
 		len(m.inventory.Hives), m.inventory.Total(), lastScan, scanState)
 
-	b.WriteString(headerStyle.Render("Hives"))
+	b.WriteString(m.renderHeader("Hives"))
 	b.WriteString("\n")
 	if len(m.inventory.Hives) == 0 {
 		b.WriteString("  (no Hives configured — open Settings to add one)\n")
@@ -437,9 +564,9 @@ func (m Model) viewSwarmOverview() string {
 	for _, h := range m.inventory.Hives {
 		st := m.inventory.Status[h]
 		if st.OK() {
-			b.WriteString(okStyle.Render(fmt.Sprintf("  ✓ %s [online] — %d bee(s)", h, len(m.inventory.ByHive[h]))))
+			b.WriteString(m.renderOK(fmt.Sprintf("  ✓ %s [online] — %d bee(s)", h, len(m.inventory.ByHive[h]))))
 		} else {
-			b.WriteString(failStyle.Render(fmt.Sprintf("  ✗ %s [offline] — %v", h, st.Err)))
+			b.WriteString(m.renderFail(fmt.Sprintf("  ✗ %s [offline] — %v", h, st.Err)))
 		}
 		b.WriteString("\n")
 	}
@@ -448,35 +575,42 @@ func (m Model) viewSwarmOverview() string {
 	m.renderBeeList(&b)
 	m.renderBannerAndInput(&b)
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("↑/↓ move · enter Bee details · / filter · e export Honey Report · r rescan · esc back · q quit"))
+	b.WriteString(m.renderHelp("↑/↓ move · enter Bee details · / filter · e export Honey Report · r rescan · esc back · q quit"))
 	return b.String()
 }
 
 func (m Model) viewBees() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("BeeChief 🐝 — Discovered Bees"))
+	b.WriteString(m.renderTitle("BeeChief 🐝 — Discovered Bees"))
 	b.WriteString("\n\n")
 	m.renderBeeList(&b)
 	m.renderBannerAndInput(&b)
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("↑/↓ move · enter Bee details · / filter · r rescan · esc back · q quit"))
+	b.WriteString(m.renderHelp("↑/↓ move · enter Bee details · / filter · r rescan · esc back · q quit"))
 	return b.String()
 }
 
 func (m Model) renderBeeList(b *strings.Builder) {
+	bees := m.filteredBees()
+	maxRows := m.listViewportRows()
+	start, end := visibleSliceBounds(len(bees), m.beeCursor, maxRows)
+
 	header := "Discovered Bees"
 	if m.filterQuery != "" {
 		header += fmt.Sprintf(" (filter: %q)", m.filterQuery)
 	}
-	b.WriteString(headerStyle.Render(header))
+	if len(bees) > maxRows {
+		header += fmt.Sprintf(" [showing %d–%d of %d]", start+1, end, len(bees))
+	}
+	b.WriteString(m.renderHeader(header))
 	b.WriteString("\n")
 
-	bees := m.filteredBees()
 	if len(bees) == 0 {
 		b.WriteString("  (no matching Bees discovered)\n")
 		return
 	}
-	for i, bee := range bees {
+	for i := start; i < end; i++ {
+		bee := bees[i]
 		emoji := bee.Emoji
 		if emoji == "" {
 			emoji = "🐝"
@@ -489,7 +623,7 @@ func (m Model) renderBeeList(b *strings.Builder) {
 		line := fmt.Sprintf("%s %s (%s) — Hive: %s · Model: %s%s",
 			emoji, bee.DisplayName(), bee.ID, bee.Hive, model, defTag)
 		if i == m.beeCursor {
-			b.WriteString(cursorStyle.Render("> " + line))
+			b.WriteString(m.renderCursor("> " + line))
 		} else {
 			b.WriteString(plainStyle.Render("  " + line))
 		}
@@ -552,7 +686,7 @@ func (m Model) viewComb() string {
 	if bee != nil {
 		beeLabel = fmt.Sprintf("%s (%s)", bee.DisplayName(), bee.Key())
 	}
-	b.WriteString(titleStyle.Render("BeeChief 🐝 — Comb / Skills Inspection"))
+	b.WriteString(m.renderTitle("BeeChief 🐝 — Comb / Skills Inspection"))
 	b.WriteString("\n")
 	fmt.Fprintf(&b, "Selected Bee: %s\n\n", beeLabel)
 
@@ -560,8 +694,8 @@ func (m Model) viewComb() string {
 		s := m.skillCheck.Summary
 		fmt.Fprintf(&b, "Skill Check Summary: %d total · %s · %s · %d disabled\n\n",
 			s.Total,
-			okStyle.Render(fmt.Sprintf("%d loadable/healthy", s.Eligible)),
-			warnStyle.Render(fmt.Sprintf("%d missing requirements", s.MissingRequirements)),
+			m.renderOK(fmt.Sprintf("%d loadable/healthy", s.Eligible)),
+			m.renderWarn(fmt.Sprintf("%d missing requirements", s.MissingRequirements)),
 			s.Disabled,
 		)
 	}
@@ -571,29 +705,41 @@ func (m Model) viewComb() string {
 	} else {
 		healthy := m.skillList.HealthySkills()
 		problems := m.skillList.ProblemSkills()
-		fmt.Fprintf(&b, "Discovered: %d · Loadable/Healthy: %d · Broken/Problem: %d\n\n",
-			len(m.skillList.Skills), len(healthy), len(problems))
+		skills := m.filteredSkills()
+		maxRows := m.listViewportRows()
+		start, end := visibleSliceBounds(len(skills), m.skillCursor, maxRows)
 
-		for i, sk := range m.skillList.Skills {
-			badge := okStyle.Render("[ready]")
+		fmt.Fprintf(&b, "Discovered: %d · Loadable/Healthy: %d · Broken/Problem: %d",
+			len(m.skillList.Skills), len(healthy), len(problems))
+		if m.skillFilterQuery != "" {
+			fmt.Fprintf(&b, " · Filter: %q (%d match)", m.skillFilterQuery, len(skills))
+		}
+		if len(skills) > maxRows {
+			fmt.Fprintf(&b, " [showing %d–%d of %d]", start+1, end, len(skills))
+		}
+		b.WriteString("\n\n")
+
+		for i := start; i < end; i++ {
+			sk := skills[i]
+			badge := m.renderOK("[ready]")
 			if sk.Broken() {
-				badge = failStyle.Render("[" + sk.StateLabel() + "]")
+				badge = m.renderFail("[" + sk.StateLabel() + "]")
 			} else if sk.Disabled {
-				badge = helpStyle.Render("[disabled]")
+				badge = m.renderHelp("[disabled]")
 			}
 			line := fmt.Sprintf("%s %s — %s", sk.Name, badge, sk.Description)
 			if i == m.skillCursor {
-				b.WriteString(cursorStyle.Render("> ") + line)
+				b.WriteString(m.renderCursor("> ") + line)
 			} else {
 				b.WriteString("  " + line)
 			}
 			b.WriteString("\n")
 		}
 
-		if m.skillCursor >= 0 && m.skillCursor < len(m.skillList.Skills) {
-			sel := m.skillList.Skills[m.skillCursor]
+		if m.skillCursor >= 0 && m.skillCursor < len(skills) {
+			sel := skills[m.skillCursor]
 			b.WriteString("\n")
-			b.WriteString(headerStyle.Render("Selected Skill Diagnostics: " + sel.Name))
+			b.WriteString(m.renderHeader("Selected Skill Diagnostics: " + sel.Name))
 			b.WriteString("\n")
 			fmt.Fprintf(&b, "  Source: %s · Eligible: %v · ModelVisible: %v · CommandVisible: %v\n",
 				firstOr(sel.Source, "unknown"), sel.Eligible, sel.ModelVisible, sel.CommandVisible)
@@ -604,7 +750,7 @@ func (m Model) viewComb() string {
 
 		if m.showRawComb {
 			b.WriteString("\n")
-			b.WriteString(headerStyle.Render("Raw OpenClaw Output"))
+			b.WriteString(m.renderHeader("Raw OpenClaw Output"))
 			b.WriteString("\n")
 			raw := m.skillList.RawOutput
 			if m.skillCheck != nil && m.skillCheck.RawOutput != "" {
@@ -617,7 +763,7 @@ func (m Model) viewComb() string {
 
 	m.renderBannerAndInput(&b)
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("↑/↓ select skill · [ / ] switch Bee · l list skills · c skill check · v raw output · esc back"))
+	b.WriteString(m.renderHelp("↑/↓ select skill · / filter · [ / ] switch Bee · l list skills · c skill check · v raw output · esc back"))
 	return b.String()
 }
 
@@ -783,6 +929,13 @@ func (m Model) viewServices() string {
 	if m.servicesReport == nil {
 		b.WriteString("No service data loaded. Press 'r' or switch Hive with '[' / ']'.\n")
 	} else {
+		caps := m.servicesReport.Capabilities
+		if caps.OS != "" || caps.OpenClaw.Installed {
+			fmt.Fprintf(&b, "Capabilities: platform=%s/%s systemd=%v docker=%v(compose=%v) ollama=%v openclaw=%v\n\n",
+				firstOr(caps.OS, "unknown"), firstOr(caps.Arch, "unknown"),
+				caps.SystemdAvailable, caps.DockerAvailable, caps.DockerComposeAvailable,
+				caps.OllamaAvailable, caps.OpenClaw.Installed)
+		}
 		switch m.servicesTab {
 		case 0:
 			sd := m.servicesReport.Systemd
@@ -894,6 +1047,7 @@ func (m Model) viewLogs() string {
 		if len(filtered) == 0 {
 			b.WriteString("  (0 lines match current filter)\n")
 		} else {
+			maxLines := m.listViewportRows()
 			start := m.logScroll
 			if start >= len(filtered) {
 				start = len(filtered) - 1
@@ -901,16 +1055,16 @@ func (m Model) viewLogs() string {
 			if start < 0 {
 				start = 0
 			}
-			end := start + 18
+			end := start + maxLines
 			if end > len(filtered) {
 				end = len(filtered)
 			}
 			for _, e := range filtered[start:end] {
 				switch e.Level {
 				case logs.LevelError:
-					b.WriteString(failStyle.Render("  " + e.Line))
+					b.WriteString(m.renderFail("  " + e.Line))
 				case logs.LevelWarning:
-					b.WriteString(warnStyle.Render("  " + e.Line))
+					b.WriteString(m.renderWarn("  " + e.Line))
 				default:
 					b.WriteString("  " + e.Line)
 				}
@@ -1011,12 +1165,12 @@ func (m Model) viewSettings() string {
 func (m Model) renderBannerAndInput(b *strings.Builder) {
 	if m.busy {
 		b.WriteString("\n")
-		b.WriteString(helpStyle.Render("Working…"))
+		b.WriteString(m.renderHelp("Working…"))
 		b.WriteString("\n")
 	}
 	if m.statusBanner != "" {
 		b.WriteString("\n")
-		b.WriteString(warnStyle.Render(m.statusBanner))
+		b.WriteString(m.renderWarn(m.statusBanner))
 		b.WriteString("\n")
 	}
 	if m.input != inputNone {
@@ -1024,7 +1178,9 @@ func (m Model) renderBannerAndInput(b *strings.Builder) {
 		var prompt string
 		switch m.input {
 		case inputFilterBees:
-			prompt = "Filter Bees: "
+			prompt = "Filter Bees (e.g. hive:qmu model:gpt): "
+		case inputFilterSkills:
+			prompt = "Filter Skills: "
 		case inputInstruction:
 			prompt = "Custom instruction: "
 		case inputLogSearch:
@@ -1034,7 +1190,7 @@ func (m Model) renderBannerAndInput(b *strings.Builder) {
 		case inputWizardField:
 			prompt = wizardFieldLabels[m.wizard.fieldIdx] + ": "
 		}
-		b.WriteString(cursorStyle.Render(prompt + m.inputBuffer + "█"))
+		b.WriteString(m.renderCursor(prompt + m.inputBuffer + "█"))
 		b.WriteString("\n")
 	}
 }

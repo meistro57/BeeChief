@@ -6,7 +6,7 @@
 
 BeeChief is a Go terminal operations console for discovering, managing, reviewing, diagnosing, and maintaining OpenClaw agents across multiple machines.
 
-> **Current Status:** Milestones **v0.1** through **v0.4** (`#1`–`#12`) are complete. Next up: **v0.5 — Hardening**.
+> **Current Status:** Milestones **v0.1** through **v0.5** are complete. Next up: **v1.0 — Stable BeeChief**.
 
 The design rule is simple:
 
@@ -92,19 +92,23 @@ BeeChief can review multiple Bees, export a useful redacted diagnostic report, a
 
 ## v0.5 — Hardening
 
-Planned work:
+Goal: package BeeChief for cross-platform deployment, harden version compatibility and SSH transport, persist structured operational events, and scale the TUI cleanly across large swarms and diverse terminal environments.
 
-- Linux release binaries
-- Windows release binaries where OpenClaw workflows support them
-- GitHub Actions build/test pipeline
-- install/update script
-- configuration migration/versioning
-- richer capability detection
-- graceful compatibility handling across OpenClaw versions
-- structured event/log persistence
-- improved filtering/search across large swarms
-- SSH connection reuse and performance tuning
-- accessibility and terminal-size handling
+- [x] Linux release binaries (`amd64`, `arm64`)
+- [x] Windows release binaries (`amd64`, `arm64`) and macOS binaries (`amd64`, `arm64`) where OpenClaw workflows support them
+- [x] GitHub Actions build/test (`ci.yml`) and release (`release.yml`) pipelines
+- [x] Install/update scripts (`scripts/install.sh`, `scripts/install.ps1`, `scripts/build-release.sh`, `Makefile`)
+- [x] Configuration migration/versioning (`version: 1`, automatic legacy v0 schema/alias migration, future version guard)
+- [x] Richer capability detection (`services.DetectCapabilities` & `openclaw.ProbeCapabilities` across OS/arch, systemd system/user bus, journalctl, Docker, Compose, Ollama, and OpenClaw subcommands)
+- [x] Graceful compatibility handling across OpenClaw versions (`--json` fallback retry, snake_case/wrapper JSON schemas, and plain-text output parsers)
+- [x] Structured event/log persistence (`internal/events` JSONL store with secret redaction, in-memory ring buffer, size-based rotation, and `events` log source)
+- [x] Improved filtering/search across large swarms (boolean/negated/field-scoped `hive:`, `model:`, `status:`, `default:` queries, Comb skill filter, and viewport pagination)
+- [x] SSH connection reuse and performance tuning (`ControlMaster=auto`, `ControlPersist`, `ControlPath` multiplexing on Unix hosts)
+- [x] Accessibility (`NO_COLOR` / `TERM=dumb` plain-text glyph mode) and compact terminal-size handling
+
+### Exit criteria
+
+BeeChief builds reproducibly for Linux, Windows, and macOS via CI/release pipelines, migrates legacy configurations safely, tolerates older or plain-text OpenClaw CLIs, persists redacted operational events, reuses SSH master connections, and remains accessible across constrained or monochrome terminals.
 
 ---
 

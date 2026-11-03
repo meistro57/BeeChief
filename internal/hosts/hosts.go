@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -113,11 +114,17 @@ type ProbeResult struct {
 	Err       error
 }
 
-// Probe checks that a Hive can run commands at all by executing `true`.
+// Probe checks that a Hive can run commands at all by executing `true`
+// (falling back to `cmd /c exit 0` on local Windows Hives without `true.exe`).
 // It never hangs beyond the context deadline (or DefaultTimeout).
 func Probe(ctx context.Context, e Execution) ProbeResult {
 	start := time.Now()
 	res, err := e.Run(ctx, "true")
+	if err != nil && runtime.GOOS == "windows" && IsKind(err, KindNotFound) {
+		if _, isLocal := e.(*LocalExecution); isLocal {
+			res, err = e.Run(ctx, "cmd", "/c", "exit", "0")
+		}
+	}
 	pr := ProbeResult{Latency: time.Since(start), Err: err}
 	if err == nil && !res.Ok() {
 		pr.Err = fmt.Errorf("probe exited %d: %s", res.ExitCode, strings.TrimSpace(res.Stderr))

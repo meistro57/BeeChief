@@ -326,3 +326,70 @@ func TestParseModelsStatusFixture(t *testing.T) {
 		t.Errorf("unexpected model status: %+v", ms)
 	}
 }
+
+type scriptedOCExec struct {
+	handler func(cmd string, args ...string) (hosts.Result, error)
+}
+
+func (s *scriptedOCExec) Run(_ context.Context, cmd string, args ...string) (hosts.Result, error) {
+	return s.handler(cmd, args...)
+}
+
+func TestGracefulCompatibilityAcrossOpenClawVersions(t *testing.T) {
+	// 1. VersionInfo parsing and comparison (CalVer + SemVer)
+	v := ParseVersionInfo("OpenClaw 2026.10.5 — All your chats")
+	if !v.Valid || v.Major != 2026 || v.Minor != 10 || v.Patch != 5 {
+		t.Fatalf("unexpected VersionInfo: %+v", v)
+	}
+	if !v.AtLeast(2026, 10, 0) || v.AtLeast(2027, 0, 0) {
+		t.Errorf("AtLeast comparison wrong for %+v", v)
+	}
+
+	// 2. Snake_case & "items" wrapper compatibility in JSON
+	legacyJSON := `{"items":[{"agent_id":"legacy-1","identity_name":"Legacy One","identity_emoji":"🐝","runtime":"ollama/qwen","is_default":true}]}`
+	bees, err := ParseAgents([]byte(legacyJSON))
+	if err != nil || len(bees) != 1 || bees[0].ID != "legacy-1" || bees[0].Name != "Legacy One" || !bees[0].Default {
+		t.Fatalf("legacy JSON compatibility failed: %+v, err=%v", bees, err)
+	}
+
+	// 3. Automatic fallback when older CLI rejects --json flag
+	calls := 0
+	exec := &scriptedOCExec{
+		handler: func(_ string, args ...string) (hosts.Result, error) {
+			calls++
+			for _, a := range args {
+				if a == "--json" {
+					return hosts.Result{ExitCode: 1, Stderr: "error: unknown flag: --json"}, nil
+				}
+			}
+			return hosts.Result{Stdout: "Agents:\n- alpha (Alpha) [default] model=openai/gpt-4o\n- beta model=ollama/llama3\n"}, nil
+		},
+	}
+	discovered, err := NewClient(exec).DiscoverAgents(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverAgents fallback: %v", err)
+	}
+	if calls != 2 || len(discovered) != 2 || discovered[0].ID != "alpha" || !discovered[0].Default || discovered[1].Runtime != "ollama/llama3" {
+		t.Errorf("unexpected fallback discovery: calls=%d bees=%+v", calls, discovered)
+	}
+
+	// 4. ProbeCapabilities
+	capExec := &scriptedOCExec{
+		handler: func(_ string, args ...string) (hosts.Result, error) {
+			if len(args) == 1 && args[0] == "--version" {
+				return hosts.Result{Stdout: "OpenClaw 2026.11.1"}, nil
+			}
+			if len(args) == 1 && args[0] == "--help" {
+				return hosts.Result{Stdout: "Commands:\n  agents\n  skills\n  models\n  health\n  logs\n"}, nil
+			}
+			if len(args) == 2 && args[0] == "skills" && args[1] == "--help" {
+				return hosts.Result{Stdout: "Commands:\n  list\n  check\n"}, nil
+			}
+			return hosts.Result{}, nil
+		},
+	}
+	caps := NewClient(capExec).ProbeCapabilities(context.Background())
+	if !caps.Installed || !caps.SupportsSkills || !caps.SupportsSkillCheck || caps.SupportsWorkshop {
+		t.Errorf("unexpected capabilities: %+v", caps)
+	}
+}

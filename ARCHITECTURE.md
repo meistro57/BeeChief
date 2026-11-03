@@ -8,30 +8,33 @@ This file explains how the code is laid out and why. Each layer depends only on 
 
 ```text
 cmd/beechief          entrypoint
-internal/app          wiring: load/save config → build Scanner & Ops → start TUI or CLI diagnose
-internal/tui          Bubble Tea UI; consumes Inventory and Ops interface without shell logic
+internal/app          wiring: load/save config → build Scanner, Ops & Event Store → start TUI or CLI diagnose/version
+internal/tui          Bubble Tea UI; consumes Inventory and Ops interface without shell logic (NO_COLOR & viewport windowing)
+internal/events       secret-redacted JSONL operational event store with ring buffer and size-based log rotation
 internal/report       Honey Report diagnostic collector, Markdown renderer, and secret redaction
 internal/swarm        bounded-concurrency multi-Bee self-review coordinator with cancellation
-internal/logs         unified log browser adapters (journalctl, docker, openclaw, agent) + ANSI stripping
+internal/logs         unified log browser adapters (journalctl, docker, openclaw, agent, events) + ANSI stripping
 internal/services     capability-detected systemd, Docker, and Ollama/model troubleshooting
 internal/diagnostics  read-only Hive Health quick diagnostic checks and severity sorting
 internal/discovery    concurrent per-Hive scan, partial failure, rescan
-internal/openclaw     the only package that knows the OpenClaw CLI (commands + JSON/text parsing)
-internal/hosts        generic Execution: local and SSH, timeouts, structured errors
-internal/config       YAML Hive configuration loader, validator, and round-trip mutation API
-internal/agents       plain data models: Bee, Inventory, HiveStatus
+internal/openclaw     the only package that knows the OpenClaw CLI (commands, capability probes, JSON/text parsing)
+internal/hosts        generic Execution: local and SSH (with ControlMaster multiplexing), timeouts, structured errors
+internal/config       YAML Hive configuration loader, schema version migrator, validator, and round-trip mutation API
+internal/agents       plain data models: Bee, Inventory, HiveStatus, and structured boolean/field query filtering
 ```
 
 ```mermaid
 flowchart TD
     CLI["cmd/beechief"] --> APP["internal/app"]
     APP --> TUI["internal/tui (Bubble Tea Views + Ops Interface)"]
+    APP --> EVT["internal/events (Redacted JSONL Event Store)"]
     APP --> REP["internal/report (Honey Report + Secret Redaction)"]
     APP --> SWARM["internal/swarm (Multi-Bee Coordinator)"]
-    APP --> LOGS["internal/logs (Journalctl / Docker / Gateway / Agent)"]
-    APP --> SVC["internal/services (systemd / Docker / Ollama & Models)"]
+    APP --> LOGS["internal/logs (Journalctl / Docker / Gateway / Agent / Events)"]
+    APP --> SVC["internal/services (systemd / Docker / Ollama & Capabilities)"]
     APP --> DIAG["internal/diagnostics (11 Hive Health Checks)"]
     APP --> DISC["internal/discovery (Concurrent Hive Scanner)"]
+    EVT --> REP
     REP --> DIAG
     REP --> SVC
     REP --> LOGS
@@ -40,12 +43,12 @@ flowchart TD
     SVC --> OC
     DIAG --> OC
     DISC --> OC
-    OC --> HOSTS["internal/hosts (Execution: Local & SSH)"]
+    OC --> HOSTS["internal/hosts (Execution: Local & SSH + ControlMaster)"]
     LOGS --> HOSTS
     SVC --> HOSTS
     DIAG --> HOSTS
-    HOSTS --> CFG["internal/config (YAML Load/Save/Validate)"]
-    DISC --> AGENTS["internal/agents (Bee, Inventory, HiveStatus)"]
+    HOSTS --> CFG["internal/config (YAML Load/Migrate/Save/Validate)"]
+    DISC --> AGENTS["internal/agents (Bee, Inventory, Structured Filters)"]
     TUI --> AGENTS
 ```
 
@@ -68,9 +71,12 @@ start with `-`, so they can't be read as ssh options. The argv also includes a
 `~/.ssh/config`, agent, keys, `ProxyJump`, and `known_hosts` all work without
 BeeChief ever touching credentials. `BatchMode=yes` turns every interactive
 prompt into a fast failure. `ConnectTimeout` bounds the connection handshake.
-A context deadline (`DefaultTimeout` when the caller doesn't set one) plus
-`exec.Cmd.WaitDelay` means `Run` always returns, even if a child process
-keeps its pipes open.
+On non-Windows hosts, `hosts.ForHive` enables OpenSSH connection multiplexing
+by default (`ControlMaster=auto`, `ControlPersist=60s`,
+`ControlPath=/tmp/beechief-ssh-%C`) so repeated diagnostics, skill checks, and
+log fetches reuse a single authenticated SSH session. A context deadline
+(`DefaultTimeout` when the caller doesn't set one) plus `exec.Cmd.WaitDelay`
+means `Run` always returns, even if a child process keeps its pipes open.
 
 **Errors vs results.** If a command ran and exited non-zero, `Run` returns a
 `Result` with that `ExitCode` and a nil error. That lets callers interpret
@@ -83,11 +89,13 @@ captured stderr. OpenSSH's own failure status, 255, maps to `unreachable`.
 **OpenClaw isolated in one package, parsing in one file.** Only
 `internal/openclaw` constructs OpenClaw commands (`agents list`, `skills list`,
 `skills check`, `skills workshop list/show`, `agent --message`, `models status`,
-`health`, `--version`). Only `internal/openclaw/parse.go` understands its JSON
-and fallback text formats. The parser accepts bare arrays or wrapped objects,
-ignores unknown fields, and skips banner lines before JSON, so a change in CLI
-output means editing one file. Discovery and command failures use sentinel
-errors (`ErrNotInstalled`, `ErrCommandFailed`, `ErrInvalidOutput`,
+`health`, `--version`), probes subcommand support (`ProbeCapabilities`), and
+gracefully retries without `--json` (`runWithJSONFallback`) when interacting
+with older OpenClaw CLI versions. Only `internal/openclaw/parse.go` understands
+its JSON (both camelCase and legacy snake_case / `items` / `data` wrappers) and
+fallback plain-text formats. The parser skips banner lines before JSON, so a
+change in CLI output means editing one file. Discovery and command failures use
+sentinel errors (`ErrNotInstalled`, `ErrCommandFailed`, `ErrInvalidOutput`,
 `ErrUnsupported`). Transport errors pass through as `*hosts.Error`, so
 `errors.Is` and `hosts.IsKind` both work.
 
@@ -110,21 +118,31 @@ systemd actions (`start`, `stop`, `restart`) require `confirmed == true` at the
 API boundary (`services.ErrConfirmationRequired`) and an explicit `[y/N]`
 confirmation in the TUI. Workshop proposals are never auto-applied.
 
-**Structured diagnostics & redaction.** `internal/report` builds portable
-**Honey Reports** directly from structured domain outputs (`Inventory`,
-`HiveHealthReport`, `HiveServicesReport`, `SkillCheckSummary`, `WorkshopListReport`,
-and `logs.Entry`) rather than scraping TUI strings, and passes the rendered
-Markdown through `report.Redact` to strip tokens, passwords, authorization
-headers, URL credentials, and PEM private keys.
+**Structured diagnostics, event persistence & redaction.** `internal/report`
+builds portable **Honey Reports** directly from structured domain outputs
+(`Inventory`, `HiveHealthReport`, `HiveServicesReport`, `SkillCheckSummary`,
+`WorkshopListReport`, and `logs.Entry`) rather than scraping TUI strings, and
+passes the rendered Markdown through `report.Redact` to strip tokens,
+passwords, authorization headers, URL credentials, and PEM private keys.
+`internal/events` records structured operational events (scans, skill checks,
+reviews, health passes, systemd actions, report exports, config updates) into
+both an in-memory ring buffer and a size-rotated `0600` JSONL file
+(`events.jsonl`), scrubbing every field through `report.Redact` before storage
+and exposing the history as the `events` log source in the Unified Log Browser.
 
 **Configured vs discovered.** `config` only describes machines. No agent,
 skill, or host name is hard-coded anywhere. Discovery produces every Bee. A
-missing config file starts BeeChief with zero Hives. A malformed file, or one
-with unknown keys, is an error, so mistakes and stray secrets don't go
-unnoticed. `config.Save` validates before writing and preserves existing file
-permissions.
+missing config file starts BeeChief with zero Hives. `config.Migrate`
+automatically upgrades legacy v0 schemas (`hosts:` top-level key, `hostname:` /
+`username:` field aliases) to `CurrentSchemaVersion` (`1`) while rejecting
+unknown keys (such as a stray `password:`) and future unsupported schema
+versions (`version > 1`). `config.Save` stamps `version: 1`, validates before
+writing, and preserves existing file permissions.
 
 **UI knows nothing about operations.** The TUI receives a `ScanFunc` and a
 `tui.Ops` interface, rendering the resulting domain structs. Scans, skill
 checks, self-reviews, service inspections, log fetches, and exports run as
-async `tea.Cmd`s so the UI never blocks on network or subprocess I/O.
+async `tea.Cmd`s so the UI never blocks on network or subprocess I/O. The TUI
+automatically detects `NO_COLOR` / `TERM=dumb` for plain-text glyph rendering,
+adapts gracefully to compact terminal dimensions (`<50x12`), and windows large
+Bee/Skill/Log lists dynamically.

@@ -7,6 +7,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -73,6 +74,7 @@ type inputMode int
 const (
 	inputNone inputMode = iota
 	inputFilterBees
+	inputFilterSkills
 	inputInstruction
 	inputLogSearch
 	inputLogTarget
@@ -101,6 +103,12 @@ type Option func(*Model)
 // WithScanner enables discovery: a scan runs on startup and "r" rescans.
 func WithScanner(scan ScanFunc) Option {
 	return func(m *Model) { m.scan = scan }
+}
+
+// WithNoColor enables or disables accessible plain-text rendering without
+// ANSI color styling (also enabled automatically when $NO_COLOR is set).
+func WithNoColor(noColor bool) Option {
+	return func(m *Model) { m.noColor = noColor }
 }
 
 // Async tea.Msg payloads.
@@ -171,10 +179,11 @@ type Model struct {
 	detailOutput string
 
 	// Comb / Skills screen (#5)
-	skillList   *openclaw.SkillListReport
-	skillCheck  *openclaw.SkillCheckReport
-	skillCursor int
-	showRawComb bool
+	skillList        *openclaw.SkillListReport
+	skillCheck       *openclaw.SkillCheckReport
+	skillCursor      int
+	skillFilterQuery string
+	showRawComb      bool
 
 	// Self-Review, Workshop, & Swarm Review (#6, #10)
 	selfReview     *openclaw.SelfReviewReport
@@ -216,6 +225,9 @@ type Model struct {
 	wizard       wizardForm
 	confirmDel   string
 	lastHiveTest *HiveTestResult
+
+	// Accessibility & terminal adaptation (v0.5)
+	noColor bool
 }
 
 // New returns a root model with the default navigation.
@@ -224,6 +236,7 @@ func New(opts ...Option) Model {
 		sections:  DefaultSections,
 		inventory: agents.NewInventory(),
 		cfg:       config.Default(),
+		noColor:   os.Getenv("NO_COLOR") != "" || strings.EqualFold(os.Getenv("TERM"), "dumb"),
 	}
 	for _, opt := range opts {
 		opt(&m)
@@ -501,6 +514,9 @@ func (m Model) handleTextInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case inputFilterBees:
 			m.filterQuery = val
 			m.beeCursor = 0
+		case inputFilterSkills:
+			m.skillFilterQuery = val
+			m.skillCursor = 0
 		case inputInstruction:
 			bee := m.activeBee()
 			if bee != nil && val != "" && m.ops != nil {
@@ -532,6 +548,9 @@ func (m Model) handleTextInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.input == inputFilterBees {
 			m.filterQuery = m.inputBuffer
 			m.beeCursor = 0
+		} else if m.input == inputFilterSkills {
+			m.skillFilterQuery = m.inputBuffer
+			m.skillCursor = 0
 		}
 		return m, nil
 	default:
@@ -540,6 +559,9 @@ func (m Model) handleTextInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.input == inputFilterBees {
 				m.filterQuery = m.inputBuffer
 				m.beeCursor = 0
+			} else if m.input == inputFilterSkills {
+				m.skillFilterQuery = m.inputBuffer
+				m.skillCursor = 0
 			}
 		}
 		return m, nil
@@ -752,8 +774,14 @@ func (m Model) updateBeeDetail(key string) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateComb(key string) (tea.Model, tea.Cmd) {
+	skills := m.filteredSkills()
 	switch key {
 	case "esc", "b":
+		if m.skillFilterQuery != "" {
+			m.skillFilterQuery = ""
+			m.skillCursor = 0
+			return m, nil
+		}
 		if m.prevScreen == screenBeeDetail {
 			m.screen = screenBeeDetail
 		} else {
@@ -768,9 +796,12 @@ func (m Model) updateComb(key string) (tea.Model, tea.Cmd) {
 			m.skillCursor--
 		}
 	case "down", "j":
-		if m.skillList != nil && m.skillCursor < len(m.skillList.Skills)-1 {
+		if m.skillCursor < len(skills)-1 {
 			m.skillCursor++
 		}
+	case "/":
+		m.input = inputFilterSkills
+		m.inputBuffer = m.skillFilterQuery
 	case "c":
 		return m, m.checkSkillsCmd()
 	case "l":

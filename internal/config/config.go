@@ -15,10 +15,19 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
+
+// CurrentSchemaVersion is the active configuration schema version.
+const CurrentSchemaVersion = 1
+
+// ErrUnsupportedVersion is returned when a configuration file declares a
+// schema version newer than this binary understands.
+var ErrUnsupportedVersion = errors.New("unsupported config schema version")
 
 // HiveType selects how BeeChief reaches a Hive.
 type HiveType string
@@ -49,6 +58,12 @@ type Hive struct {
 	Port int `yaml:"port,omitempty" json:"port,omitempty"`
 	// Label is an optional human-friendly description.
 	Label string `yaml:"label,omitempty" json:"label,omitempty"`
+	// ControlMaster optionally enables or disables SSH connection multiplexing
+	// (ControlMaster=auto) for this Hive. Nil defers to the platform default.
+	ControlMaster *bool `yaml:"controlMaster,omitempty" json:"controlMaster,omitempty"`
+	// ControlPersist optionally overrides the SSH ControlPersist duration
+	// (e.g. "60s", "5m") when connection reuse is enabled.
+	ControlPersist string `yaml:"controlPersist,omitempty" json:"controlPersist,omitempty"`
 }
 
 // Kind returns the Hive's effective type, applying inference when Type is
@@ -80,19 +95,44 @@ func (h Hive) Validate() error {
 		if h.Port < 0 || h.Port > 65535 {
 			return fmt.Errorf("hive %q: port %d out of range", h.Name, h.Port)
 		}
+		if cp := strings.TrimSpace(h.ControlPersist); cp != "" {
+			if err := validateControlPersist(cp); err != nil {
+				return fmt.Errorf("hive %q: %w", h.Name, err)
+			}
+		}
 	default:
 		return fmt.Errorf("hive %q: unknown type %q (want local or ssh)", h.Name, h.Type)
 	}
 	return nil
 }
 
-// Config is the root configuration document.
-type Config struct {
-	Hives []Hive `yaml:"hives" json:"hives"`
+func validateControlPersist(cp string) error {
+	if strings.HasPrefix(cp, "-") {
+		return fmt.Errorf("controlPersist %q must not start with '-'", cp)
+	}
+	if cp == "yes" || cp == "no" {
+		return nil
+	}
+	if secs, err := strconv.Atoi(cp); err == nil && secs > 0 {
+		return nil
+	}
+	if d, err := time.ParseDuration(cp); err == nil && d > 0 {
+		return nil
+	}
+	return fmt.Errorf("invalid controlPersist %q (want positive duration like 60s or 5m)", cp)
 }
 
-// Validate checks every Hive and rejects duplicate names.
+// Config is the root configuration document.
+type Config struct {
+	Version int    `yaml:"version,omitempty" json:"version,omitempty"`
+	Hives   []Hive `yaml:"hives" json:"hives"`
+}
+
+// Validate checks the schema version and every Hive, rejecting duplicate names.
 func (c Config) Validate() error {
+	if c.Version < 0 || c.Version > CurrentSchemaVersion {
+		return fmt.Errorf("%w: got version %d (supported up to %d)", ErrUnsupportedVersion, c.Version, CurrentSchemaVersion)
+	}
 	seen := make(map[string]bool, len(c.Hives))
 	for i, h := range c.Hives {
 		if err := h.Validate(); err != nil {
@@ -111,25 +151,108 @@ func (c Config) Validate() error {
 // BeeChief must start cleanly with zero Hives: discovery simply finds nothing
 // rather than failing.
 func Default() Config {
-	return Config{Hives: []Hive{}}
+	return Config{Version: CurrentSchemaVersion, Hives: []Hive{}}
 }
 
-// Parse decodes and validates a YAML configuration document. Unknown keys
-// are rejected so typos surface instead of being silently ignored.
-func Parse(data []byte) (Config, error) {
-	cfg := Default()
+// rawHiveWire supports both v1 Hive fields and legacy v0 field aliases
+// (hostname -> host, username -> user) during migration while still allowing
+// KnownFields(true) to reject unknown keys like "password".
+type rawHiveWire struct {
+	Name           string   `yaml:"name"`
+	Type           HiveType `yaml:"type,omitempty"`
+	Host           string   `yaml:"host,omitempty"`
+	Hostname       string   `yaml:"hostname,omitempty"`
+	User           string   `yaml:"user,omitempty"`
+	Username       string   `yaml:"username,omitempty"`
+	Port           int      `yaml:"port,omitempty"`
+	Label          string   `yaml:"label,omitempty"`
+	ControlMaster  *bool    `yaml:"controlMaster,omitempty"`
+	ControlPersist string   `yaml:"controlPersist,omitempty"`
+}
+
+type rawConfigWire struct {
+	Version *int          `yaml:"version,omitempty"`
+	Hives   []rawHiveWire `yaml:"hives,omitempty"`
+	Hosts   []rawHiveWire `yaml:"hosts,omitempty"`
+}
+
+// Migrate decodes a YAML configuration document, automatically migrating
+// legacy v0 schemas (unversioned documents, top-level `hosts:`, or `hostname` /
+// `username` field aliases) to CurrentSchemaVersion. Unknown keys are still
+// rejected so typos and stray secrets surface immediately.
+func Migrate(data []byte) (Config, bool, error) {
+	var wire rawConfigWire
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
-	if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
-		return Config{}, fmt.Errorf("parse config: %w", err)
+	if err := dec.Decode(&wire); err != nil && !errors.Is(err, io.EOF) {
+		return Config{}, false, fmt.Errorf("parse config: %w", err)
 	}
-	if cfg.Hives == nil {
-		cfg.Hives = []Hive{}
+
+	migrated := false
+	ver := CurrentSchemaVersion
+	if wire.Version != nil {
+		ver = *wire.Version
+		if ver == 0 {
+			ver = CurrentSchemaVersion
+			migrated = true
+		}
+	} else if len(wire.Hives) > 0 || len(wire.Hosts) > 0 {
+		migrated = true
+	}
+
+	if ver < 0 || ver > CurrentSchemaVersion {
+		return Config{}, false, fmt.Errorf("invalid config: %w: got version %d (supported up to %d)",
+			ErrUnsupportedVersion, ver, CurrentSchemaVersion)
+	}
+
+	if len(wire.Hives) > 0 && len(wire.Hosts) > 0 {
+		return Config{}, false, errors.New("invalid config: cannot specify both 'hives' and legacy 'hosts'")
+	}
+	rawList := wire.Hives
+	if len(wire.Hosts) > 0 {
+		rawList = wire.Hosts
+		migrated = true
+	}
+
+	hives := make([]Hive, 0, len(rawList))
+	for _, rh := range rawList {
+		host := rh.Host
+		if host == "" && rh.Hostname != "" {
+			host = rh.Hostname
+			migrated = true
+		}
+		user := rh.User
+		if user == "" && rh.Username != "" {
+			user = rh.Username
+			migrated = true
+		}
+		hives = append(hives, Hive{
+			Name:           rh.Name,
+			Type:           rh.Type,
+			Host:           host,
+			User:           user,
+			Port:           rh.Port,
+			Label:          rh.Label,
+			ControlMaster:  rh.ControlMaster,
+			ControlPersist: rh.ControlPersist,
+		})
+	}
+
+	cfg := Config{
+		Version: ver,
+		Hives:   hives,
 	}
 	if err := cfg.Validate(); err != nil {
-		return Config{}, fmt.Errorf("invalid config: %w", err)
+		return Config{}, false, fmt.Errorf("invalid config: %w", err)
 	}
-	return cfg, nil
+	return cfg, migrated, nil
+}
+
+// Parse decodes, migrates, and validates a YAML configuration document.
+// Unknown keys are rejected so typos surface instead of being silently ignored.
+func Parse(data []byte) (Config, error) {
+	cfg, _, err := Migrate(data)
+	return cfg, err
 }
 
 // Load reads and parses the configuration file at path.
@@ -224,6 +347,9 @@ func (c *Config) RemoveHive(name string) error {
 
 // Marshal encodes c as YAML after validating it.
 func Marshal(c Config) ([]byte, error) {
+	if c.Version == 0 {
+		c.Version = CurrentSchemaVersion
+	}
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}

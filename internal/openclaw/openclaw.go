@@ -64,11 +64,71 @@ const SelfReviewPrompt = `Perform a self-review of your current skills.
 6. Do not change unrelated user-owned or shared skills.
 7. Report what you inspected, what you recommend changing, and why.`
 
+// Capabilities describes which OpenClaw CLI subcommands and flags are
+// supported on a Hive.
+type Capabilities struct {
+	Installed             bool        `json:"installed"`
+	Version               VersionInfo `json:"version"`
+	SupportsJSON          bool        `json:"supportsJson"`
+	SupportsAgents        bool        `json:"supportsAgents"`
+	SupportsSkills        bool        `json:"supportsSkills"`
+	SupportsSkillCheck    bool        `json:"supportsSkillCheck"`
+	SupportsWorkshop      bool        `json:"supportsWorkshop"`
+	SupportsModelsStatus  bool        `json:"supportsModelsStatus"`
+	SupportsGatewayHealth bool        `json:"supportsGatewayHealth"`
+	SupportsLogs          bool        `json:"supportsLogs"`
+}
+
+// ProbeCapabilities inspects the installed OpenClaw CLI on the Hive to
+// determine its version and supported subcommand surface without changing state.
+func (c *Client) ProbeCapabilities(ctx context.Context) Capabilities {
+	verStr, err := c.Version(ctx)
+	if err != nil {
+		return Capabilities{Installed: false}
+	}
+	vInfo := ParseVersionInfo(verStr)
+	caps := Capabilities{
+		Installed:             true,
+		Version:               vInfo,
+		SupportsJSON:          true,
+		SupportsAgents:        true,
+		SupportsSkills:        true,
+		SupportsSkillCheck:    true,
+		SupportsWorkshop:      true,
+		SupportsModelsStatus:  true,
+		SupportsGatewayHealth: true,
+		SupportsLogs:          true,
+	}
+
+	if helpRes, helpErr := c.exec.Run(ctx, Command, "--help"); helpErr == nil && helpRes.Ok() {
+		helpLower := strings.ToLower(helpRes.Stdout + "\n" + helpRes.Stderr)
+		if strings.Contains(helpLower, "commands:") || strings.Contains(helpLower, "usage:") {
+			caps.SupportsAgents = strings.Contains(helpLower, "agents")
+			caps.SupportsSkills = strings.Contains(helpLower, "skills")
+			caps.SupportsModelsStatus = strings.Contains(helpLower, "models")
+			caps.SupportsGatewayHealth = strings.Contains(helpLower, "health")
+			caps.SupportsLogs = strings.Contains(helpLower, "logs")
+		}
+	}
+
+	if caps.SupportsSkills {
+		if skRes, skErr := c.exec.Run(ctx, Command, "skills", "--help"); skErr == nil && skRes.Ok() {
+			skLower := strings.ToLower(skRes.Stdout + "\n" + skRes.Stderr)
+			if strings.Contains(skLower, "commands:") || strings.Contains(skLower, "usage:") {
+				caps.SupportsSkillCheck = strings.Contains(skLower, "check")
+				caps.SupportsWorkshop = strings.Contains(skLower, "workshop")
+			}
+		}
+	}
+	return caps
+}
+
 // DiscoverAgents asks the Hive which OpenClaw agents exist by running
-// `openclaw agents list --json`. Returned Bees have an empty Hive field;
-// the caller owns Hive naming.
+// `openclaw agents list --json` (falling back to `openclaw agents list` if the
+// installed CLI version rejects `--json`). Returned Bees have an empty Hive
+// field; the caller owns Hive naming.
 func (c *Client) DiscoverAgents(ctx context.Context) ([]agents.Bee, error) {
-	res, err := c.run(ctx, listAgentsArgs...)
+	res, err := c.runWithJSONFallback(ctx, "agents", "list")
 	if err != nil {
 		return nil, err
 	}
@@ -85,9 +145,9 @@ func (c *Client) Version(ctx context.Context) (string, error) {
 }
 
 // GatewayHealth checks whether the OpenClaw Gateway on the Hive responds to
-// `openclaw health --json`.
+// `openclaw health --json` (with plain-text fallback on older versions).
 func (c *Client) GatewayHealth(ctx context.Context) (string, error) {
-	res, err := c.run(ctx, "health", "--json")
+	res, err := c.runWithJSONFallback(ctx, "health")
 	if err != nil {
 		return "", err
 	}
@@ -101,8 +161,7 @@ func (c *Client) ListSkills(ctx context.Context, agentID string) (*SkillListRepo
 	if strings.TrimSpace(agentID) != "" {
 		args = append(args, "--agent", agentID)
 	}
-	args = append(args, "--json")
-	res, err := c.run(ctx, args...)
+	res, err := c.runWithJSONFallback(ctx, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -124,8 +183,7 @@ func (c *Client) CheckSkills(ctx context.Context, agentID string) (*SkillCheckRe
 	if strings.TrimSpace(agentID) != "" {
 		args = append(args, "--agent", agentID)
 	}
-	args = append(args, "--json")
-	res, err := c.run(ctx, args...)
+	res, err := c.runWithJSONFallback(ctx, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -147,8 +205,7 @@ func (c *Client) ListWorkshop(ctx context.Context, agentID string) (*WorkshopLis
 	if strings.TrimSpace(agentID) != "" {
 		args = append(args, "--agent", agentID)
 	}
-	args = append(args, "--json")
-	res, err := c.run(ctx, args...)
+	res, err := c.runWithJSONFallback(ctx, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -170,8 +227,7 @@ func (c *Client) ShowWorkshopProposal(ctx context.Context, agentID, name string)
 	if strings.TrimSpace(agentID) != "" {
 		args = append(args, "--agent", agentID)
 	}
-	args = append(args, "--json")
-	res, err := c.run(ctx, args...)
+	res, err := c.runWithJSONFallback(ctx, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -214,8 +270,7 @@ func (c *Client) ModelsStatus(ctx context.Context, agentID string) (*ModelStatus
 	if strings.TrimSpace(agentID) != "" {
 		args = append(args, "--agent", agentID)
 	}
-	args = append(args, "--json")
-	res, err := c.run(ctx, args...)
+	res, err := c.runWithJSONFallback(ctx, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -232,8 +287,8 @@ func (c *Client) runAgentMessage(ctx context.Context, agentID, message string) (
 	if strings.TrimSpace(agentID) != "" {
 		args = append(args, "--agent", agentID)
 	}
-	args = append(args, "--message", message, "--json")
-	res, err := c.run(ctx, args...)
+	args = append(args, "--message", message)
+	res, err := c.runWithJSONFallback(ctx, args...)
 	if err != nil {
 		return "", "", err
 	}
@@ -243,6 +298,31 @@ func (c *Client) runAgentMessage(ctx context.Context, agentID, message string) (
 		summary = strings.TrimSpace(res.Stdout)
 	}
 	return summary, raw, nil
+}
+
+// runWithJSONFallback runs `openclaw <args...> --json`, and if the installed
+// OpenClaw version specifically rejects the `--json` flag as unsupported,
+// automatically retries `openclaw <args...>` without `--json`.
+func (c *Client) runWithJSONFallback(ctx context.Context, argsWithoutJSON ...string) (hosts.Result, error) {
+	withJSON := append(append([]string(nil), argsWithoutJSON...), "--json")
+	res, err := c.run(ctx, withJSON...)
+	if err != nil && errors.Is(err, ErrUnsupported) && isUnsupportedJSONFlag(res.Stderr+"\n"+res.Stdout) {
+		return c.run(ctx, argsWithoutJSON...)
+	}
+	return res, err
+}
+
+func isUnsupportedJSONFlag(out string) bool {
+	lower := strings.ToLower(out)
+	if !strings.Contains(lower, "json") {
+		return false
+	}
+	for _, pat := range []string{"unknown option", "unrecognized option", "unknown flag", "unsupported flag"} {
+		if strings.Contains(lower, pat) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Client) run(ctx context.Context, args ...string) (hosts.Result, error) {

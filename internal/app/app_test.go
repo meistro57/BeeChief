@@ -31,3 +31,15 @@ func TestDiagnoseExportCLI(t *testing.T) {
 		t.Errorf("unexpected report content:\n%s", string(data))
 	}
 }
+
+func TestVersionCLI(t *testing.T) {
+	for _, arg := range []string{"version", "--version", "-v"} {
+		var stdout bytes.Buffer
+		if err := RunArgs([]string{arg}, &stdout); err != nil {
+			t.Fatalf("RunArgs(%q): %v", arg, err)
+		}
+		if !strings.HasPrefix(stdout.String(), "beechief v") {
+			t.Errorf("RunArgs(%q) output = %q, want prefix 'beechief v'", arg, stdout.String())
+		}
+	}
+}

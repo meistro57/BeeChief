@@ -464,3 +464,33 @@ func TestTroubleshootingServicesLogsAndWizardFlows(t *testing.T) {
 		t.Errorf("expected local Hive saved via wizard, got %+v", ops.cfg.Hives)
 	}
 }
+
+func TestAccessibilityNoColorTerminalSizeAndLargeSwarmWindowing(t *testing.T) {
+	// Build a large swarm of 30 Bees to test viewport windowing
+	largeInv := agents.NewInventory()
+	var manyBees []agents.Bee
+	for i := 0; i < 30; i++ {
+		manyBees = append(manyBees, agents.Bee{ID: "bee-" + string(rune('a'+(i%26))) + "-" + string(rune('0'+(i/10)))})
+	}
+	largeInv.Record(agents.HiveStatus{Hive: "mega-hive"}, manyBees)
+
+	m := New(
+		WithScanner(func(context.Context) *agents.Inventory { return largeInv }),
+		WithNoColor(true),
+	)
+	mm, _ := m.Update(m.Init()())
+
+	// Compact terminal size (<50x12) shows resize notice without panicking
+	mm, _ = mm.(Model).Update(tea.WindowSizeMsg{Width: 42, Height: 10})
+	if !strings.Contains(mm.(Model).View(), "Compact terminal 42x10") {
+		t.Errorf("expected compact terminal notice, got:\n%s", mm.(Model).View())
+	}
+
+	// Normal terminal size (80x24) -> Swarm Overview shows windowed slice [showing 1–10 of 30]
+	mm, _ = mm.(Model).Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	mm, _ = mm.(Model).Update(tea.KeyMsg{Type: tea.KeyEnter}) // enter Swarm Overview
+	view := mm.(Model).View()
+	if !strings.Contains(view, "[showing 1–10 of 30]") {
+		t.Errorf("expected large-swarm pagination indicator in view:\n%s", view)
+	}
+}

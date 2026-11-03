@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -163,5 +164,50 @@ func TestConfigMutationAndRoundTripSave(t *testing.T) {
 	}
 	if len(loaded.Hives) != 1 || loaded.Hives[0].Host != "10.0.0.6" || loaded.Hives[0].User != "ops" {
 		t.Errorf("round-trip mismatch: %+v", loaded.Hives)
+	}
+	if loaded.Version != CurrentSchemaVersion {
+		t.Errorf("expected version %d after save, got %d", CurrentSchemaVersion, loaded.Version)
+	}
+}
+
+func TestConfigVersioningAndMigration(t *testing.T) {
+	// Legacy v0 schema with top-level "hosts:" and "hostname:"/"username:" aliases
+	legacy := `
+version: 0
+hosts:
+  - name: old-box
+    type: ssh
+    hostname: 192.168.1.50
+    username: deploy
+    controlPersist: 90s
+`
+	cfg, migrated, err := Migrate([]byte(legacy))
+	if err != nil {
+		t.Fatalf("Migrate legacy: %v", err)
+	}
+	if !migrated {
+		t.Error("expected migrated=true for v0 legacy config")
+	}
+	if cfg.Version != CurrentSchemaVersion {
+		t.Errorf("expected migrated version %d, got %d", CurrentSchemaVersion, cfg.Version)
+	}
+	if len(cfg.Hives) != 1 || cfg.Hives[0].Host != "192.168.1.50" || cfg.Hives[0].User != "deploy" {
+		t.Errorf("unexpected migrated hive: %+v", cfg.Hives)
+	}
+
+	// Current v1 schema should report migrated=false
+	v1Doc := "version: 1\nhives:\n  - name: work\n    type: local\n"
+	cfgV1, migratedV1, err := Migrate([]byte(v1Doc))
+	if err != nil {
+		t.Fatalf("Migrate v1: %v", err)
+	}
+	if migratedV1 || cfgV1.Version != 1 {
+		t.Errorf("expected migrated=false and version=1, got migrated=%v version=%d", migratedV1, cfgV1.Version)
+	}
+
+	// Unsupported future version must fail with ErrUnsupportedVersion
+	futureDoc := "version: 99\nhives:\n  - name: work\n    type: local\n"
+	if _, err := Parse([]byte(futureDoc)); !errors.Is(err, ErrUnsupportedVersion) {
+		t.Errorf("expected ErrUnsupportedVersion for version 99, got %v", err)
 	}
 }

@@ -11,13 +11,16 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/meistro57/beechief/internal/agents"
 	"github.com/meistro57/beechief/internal/config"
 	"github.com/meistro57/beechief/internal/diagnostics"
 	"github.com/meistro57/beechief/internal/discovery"
+	"github.com/meistro57/beechief/internal/events"
 	"github.com/meistro57/beechief/internal/hosts"
 	"github.com/meistro57/beechief/internal/logs"
 	"github.com/meistro57/beechief/internal/openclaw"
@@ -38,6 +41,14 @@ func Run() error {
 
 // RunArgs dispatches CLI arguments or launches the interactive TUI.
 func RunArgs(args []string, stdout io.Writer) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "version", "--version", "-v":
+			fmt.Fprintf(stdout, "beechief %s\n", report.DefaultVersion)
+			return nil
+		}
+	}
+
 	cfgPath := config.DefaultPath()
 	cfg, err := config.LoadOrDefault(cfgPath)
 	if err != nil {
@@ -49,6 +60,7 @@ func RunArgs(args []string, stdout io.Writer) error {
 	}
 
 	backend := newBackend(cfgPath, cfg)
+	defer backend.Close()
 	scan := func(ctx context.Context) *agents.Inventory { return backend.Scan(ctx) }
 
 	p := tea.NewProgram(
@@ -98,6 +110,7 @@ type backend struct {
 	cfg     config.Config
 	scanner *discovery.Scanner
 	execs   map[string]hosts.Execution
+	events  *events.Store
 }
 
 func newBackend(cfgPath string, cfg config.Config) *backend {
@@ -106,6 +119,17 @@ func newBackend(cfgPath string, cfg config.Config) *backend {
 		cfg:     cfg,
 		scanner: discovery.FromConfig(cfg),
 		execs:   buildExecMap(cfg),
+		events:  events.NewStore(events.DefaultPath(), events.DefaultMaxBytes),
+	}
+}
+
+func (b *backend) Close() {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	for _, exec := range b.execs {
+		if sshExec, ok := exec.(*hosts.SSHExecution); ok {
+			_ = sshExec.CloseMaster(context.Background())
+		}
 	}
 }
 
@@ -120,10 +144,23 @@ func buildExecMap(cfg config.Config) map[string]hosts.Execution {
 }
 
 func (b *backend) Scan(ctx context.Context) *agents.Inventory {
+	start := time.Now()
 	b.mu.RLock()
 	sc := b.scanner
 	b.mu.RUnlock()
-	return sc.Rescan(ctx)
+	inv := sc.Rescan(ctx)
+	lvl := events.LevelInfo
+	failed := inv.Failed()
+	if len(failed) > 0 {
+		lvl = events.LevelWarn
+	}
+	_ = b.events.Record(events.Event{
+		Kind:       events.KindScan,
+		Level:      lvl,
+		Summary:    fmt.Sprintf("Scanned %d Hive(s): %d Bee(s) discovered, %d failed", len(inv.Hives), inv.Total(), len(failed)),
+		DurationMs: time.Since(start).Milliseconds(),
+	})
+	return inv
 }
 
 func (b *backend) execFor(hive string) (hosts.Execution, error) {
@@ -145,19 +182,55 @@ func (b *backend) ListSkills(ctx context.Context, bee agents.Bee) (*openclaw.Ski
 }
 
 func (b *backend) CheckSkills(ctx context.Context, bee agents.Bee) (*openclaw.SkillCheckReport, error) {
+	start := time.Now()
 	exec, err := b.execFor(bee.Hive)
 	if err != nil {
 		return nil, err
 	}
-	return openclaw.NewClient(exec).CheckSkills(ctx, bee.ID)
+	rep, err := openclaw.NewClient(exec).CheckSkills(ctx, bee.ID)
+	lvl := events.LevelInfo
+	sum := "skill check completed"
+	if err != nil {
+		lvl = events.LevelError
+		sum = err.Error()
+	} else if rep != nil {
+		sum = fmt.Sprintf("total=%d ready=%d missing=%d", rep.Summary.Total, rep.Summary.Eligible, rep.Summary.MissingRequirements)
+	}
+	_ = b.events.Record(events.Event{
+		Kind:       events.KindSkillCheck,
+		Level:      lvl,
+		Hive:       bee.Hive,
+		Bee:        bee.ID,
+		Summary:    sum,
+		DurationMs: time.Since(start).Milliseconds(),
+	})
+	return rep, err
 }
 
 func (b *backend) SelfReview(ctx context.Context, bee agents.Bee) (*openclaw.SelfReviewReport, error) {
+	start := time.Now()
 	exec, err := b.execFor(bee.Hive)
 	if err != nil {
 		return nil, err
 	}
-	return openclaw.NewClient(exec).SelfReview(ctx, bee.ID)
+	rep, err := openclaw.NewClient(exec).SelfReview(ctx, bee.ID)
+	lvl := events.LevelInfo
+	sum := "self-review completed"
+	if err != nil {
+		lvl = events.LevelError
+		sum = err.Error()
+	} else if rep != nil {
+		sum = fmt.Sprintf("proposals=%d", len(rep.Proposals))
+	}
+	_ = b.events.Record(events.Event{
+		Kind:       events.KindSelfReview,
+		Level:      lvl,
+		Hive:       bee.Hive,
+		Bee:        bee.ID,
+		Summary:    sum,
+		DurationMs: time.Since(start).Milliseconds(),
+	})
+	return rep, err
 }
 
 func (b *backend) ListWorkshop(ctx context.Context, bee agents.Bee) (*openclaw.WorkshopListReport, error) {
@@ -196,7 +269,22 @@ func (b *backend) RunHiveHealth(ctx context.Context, hive string) (*diagnostics.
 	b.mu.RLock()
 	exec := b.execs[hive]
 	b.mu.RUnlock()
-	return diagnostics.Run(ctx, hive, exec), nil
+	rep := diagnostics.Run(ctx, hive, exec)
+	p, w, f, u := rep.Counts()
+	lvl := events.LevelInfo
+	if f > 0 {
+		lvl = events.LevelError
+	} else if w > 0 {
+		lvl = events.LevelWarn
+	}
+	_ = b.events.Record(events.Event{
+		Kind:       events.KindHiveHealth,
+		Level:      lvl,
+		Hive:       hive,
+		Summary:    fmt.Sprintf("Hive Health: pass=%d warn=%d fail=%d unavail=%d", p, w, f, u),
+		DurationMs: rep.Duration.Milliseconds(),
+	})
+	return rep, nil
 }
 
 func (b *backend) InspectServices(ctx context.Context, hive string) (*services.HiveServicesReport, error) {
@@ -222,7 +310,18 @@ func (b *backend) ControlSystemdService(ctx context.Context, hive, unit string, 
 	if err != nil {
 		return err
 	}
-	return services.ControlSystemdService(ctx, exec, unit, action, confirmed)
+	err = services.ControlSystemdService(ctx, exec, unit, action, confirmed)
+	lvl := events.LevelInfo
+	if err != nil {
+		lvl = events.LevelError
+	}
+	_ = b.events.Record(events.Event{
+		Kind:    events.KindServiceControl,
+		Level:   lvl,
+		Hive:    hive,
+		Summary: fmt.Sprintf("systemctl %s %s", action, unit),
+	})
+	return err
 }
 
 func (b *backend) FetchDockerLogs(ctx context.Context, hive, container string, tail int) (string, error) {
@@ -234,6 +333,33 @@ func (b *backend) FetchDockerLogs(ctx context.Context, hive, container string, t
 }
 
 func (b *backend) FetchLogs(ctx context.Context, hive string, source logs.SourceKind, target string, tail int) (*logs.Result, error) {
+	if source == logs.SourceEvents {
+		evs := b.events.Recent(tail)
+		q := strings.ToLower(strings.TrimSpace(target))
+		entries := make([]logs.Entry, 0, len(evs))
+		for _, ev := range evs {
+			line := ev.FormatLine()
+			if q != "" && !strings.Contains(strings.ToLower(line), q) {
+				continue
+			}
+			var lvl logs.Level
+			switch ev.Level {
+			case events.LevelError:
+				lvl = logs.LevelError
+			case events.LevelWarn:
+				lvl = logs.LevelWarning
+			default:
+				lvl = logs.LevelInfo
+			}
+			entries = append(entries, logs.Entry{Line: line, Level: lvl})
+		}
+		return &logs.Result{
+			Source:  logs.SourceEvents,
+			Target:  target,
+			Command: logs.CommandString(logs.SourceEvents, target, tail),
+			Entries: entries,
+		}, nil
+	}
 	exec, err := b.execFor(hive)
 	if err != nil {
 		return nil, err
@@ -253,6 +379,7 @@ func (b *backend) StartSwarmReview(mode swarm.Mode, bees []agents.Bee, onProgres
 }
 
 func (b *backend) ExportHoneyReport(ctx context.Context, inv *agents.Inventory, path string) (string, error) {
+	start := time.Now()
 	b.mu.RLock()
 	cfg := b.cfg
 	execCopy := make(map[string]hosts.Execution, len(b.execs))
@@ -261,7 +388,20 @@ func (b *backend) ExportHoneyReport(ctx context.Context, inv *agents.Inventory, 
 	}
 	b.mu.RUnlock()
 	hr := report.Collect(ctx, cfg, inv, execCopy)
-	return report.Export(hr, path)
+	written, err := report.Export(hr, path)
+	lvl := events.LevelInfo
+	sum := "Exported Honey Report to " + written
+	if err != nil {
+		lvl = events.LevelError
+		sum = "Honey Report export failed: " + err.Error()
+	}
+	_ = b.events.Record(events.Event{
+		Kind:       events.KindHoneyReport,
+		Level:      lvl,
+		Summary:    sum,
+		DurationMs: time.Since(start).Milliseconds(),
+	})
+	return written, err
 }
 
 func (b *backend) GetConfig() config.Config {
@@ -315,9 +455,19 @@ func (b *backend) SaveConfig(cfg config.Config) error {
 		return err
 	}
 	b.mu.Lock()
+	for _, exec := range b.execs {
+		if sshExec, ok := exec.(*hosts.SSHExecution); ok {
+			_ = sshExec.CloseMaster(context.Background())
+		}
+	}
 	b.cfg = cfg
 	b.scanner = discovery.FromConfig(cfg)
 	b.execs = buildExecMap(cfg)
 	b.mu.Unlock()
+	_ = b.events.Record(events.Event{
+		Kind:    events.KindConfigChange,
+		Level:   events.LevelInfo,
+		Summary: fmt.Sprintf("Saved configuration (%d Hive(s))", len(cfg.Hives)),
+	})
 	return nil
 }

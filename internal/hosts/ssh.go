@@ -11,6 +11,14 @@ import (
 // DefaultConnectTimeout bounds the SSH TCP connect + handshake.
 const DefaultConnectTimeout = 10 * time.Second
 
+// DefaultControlPersist is the default duration an SSH master connection stays
+// open in the background for connection reuse across Hive commands.
+const DefaultControlPersist = "60s"
+
+// DefaultControlPath is a short POSIX socket path template using OpenSSH's %C
+// hash token so Unix domain socket paths never exceed sun_path limits.
+const DefaultControlPath = "/tmp/beechief-ssh-%C"
+
 // sshUnreachableExit is the exit status OpenSSH reserves for its own
 // failures (connect, auth, host key). A remote command that itself exits
 // 255 is indistinguishable and is likewise reported as unreachable.
@@ -40,6 +48,15 @@ type SSHExecution struct {
 	Timeout time.Duration
 	// Binary is the ssh executable. Empty means "ssh" from PATH.
 	Binary string
+	// ControlMaster enables OpenSSH connection multiplexing (ControlMaster=auto)
+	// so rapid diagnostic/discovery commands reuse a single SSH session.
+	ControlMaster bool
+	// ControlPersist sets how long the master connection remains open in the
+	// background (e.g. "60s"). Empty uses DefaultControlPersist when ControlMaster is true.
+	ControlPersist string
+	// ControlPath sets the OpenSSH ControlPath socket template. Empty uses
+	// DefaultControlPath when ControlMaster is true.
+	ControlPath string
 }
 
 // Args returns the full ssh argv (excluding the binary) that Run would use
@@ -60,6 +77,21 @@ func (s *SSHExecution) Args(command string, args ...string) []string {
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=" + strconv.Itoa(secs),
 	}
+	if s.ControlMaster {
+		persist := strings.TrimSpace(s.ControlPersist)
+		if persist == "" {
+			persist = DefaultControlPersist
+		}
+		cpath := strings.TrimSpace(s.ControlPath)
+		if cpath == "" {
+			cpath = DefaultControlPath
+		}
+		argv = append(argv,
+			"-o", "ControlMaster=auto",
+			"-o", "ControlPersist="+persist,
+			"-o", "ControlPath="+cpath,
+		)
+	}
 	if s.ConfigFile != "" {
 		argv = append(argv, "-F", s.ConfigFile)
 	}
@@ -70,6 +102,36 @@ func (s *SSHExecution) Args(command string, args ...string) []string {
 		argv = append(argv, "-l", s.User)
 	}
 	return append(argv, "--", s.Host, RemoteCommand(command, args...))
+}
+
+// CloseMaster asks OpenSSH to close any active multiplexed master connection
+// for this Hive. If multiplexing is disabled or no master is running, it
+// returns nil.
+func (s *SSHExecution) CloseMaster(ctx context.Context) error {
+	if !s.ControlMaster {
+		return nil
+	}
+	bin := s.Binary
+	if bin == "" {
+		bin = "ssh"
+	}
+	cpath := strings.TrimSpace(s.ControlPath)
+	if cpath == "" {
+		cpath = DefaultControlPath
+	}
+	argv := []string{bin, "-O", "exit", "-o", "ControlPath=" + cpath}
+	if s.ConfigFile != "" {
+		argv = append(argv, "-F", s.ConfigFile)
+	}
+	if s.Port > 0 {
+		argv = append(argv, "-p", strconv.Itoa(s.Port))
+	}
+	if s.User != "" {
+		argv = append(argv, "-l", s.User)
+	}
+	argv = append(argv, "--", s.Host)
+	_, _, err := runProcess(ctx, s.Hive, 5*time.Second, "ssh -O exit "+s.target(), argv)
+	return err
 }
 
 // Run implements Execution.

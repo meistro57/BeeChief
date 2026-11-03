@@ -155,3 +155,37 @@ func TestSubsystemsAbsentDegradeGracefully(t *testing.T) {
 		t.Errorf("expected all optional subsystems unavailable: %+v", all)
 	}
 }
+
+func TestDetectCapabilities(t *testing.T) {
+	exec := &fakeExec{
+		handler: func(cmd string, args ...string) (hosts.Result, error) {
+			key := cmd + " " + strings.Join(args, " ")
+			switch key {
+			case "uname -s -r -m":
+				return hosts.Result{Stdout: "Linux 6.8.0-generic x86_64\n"}, nil
+			case "systemctl is-system-running":
+				return hosts.Result{Stdout: "running\n"}, nil
+			case "systemctl --user is-system-running":
+				return hosts.Result{Stdout: "running\n"}, nil
+			case "journalctl --version":
+				return hosts.Result{Stdout: "systemd 255\n"}, nil
+			case "docker info --format {{.ServerVersion}}":
+				return hosts.Result{Stdout: "27.1.1\n"}, nil
+			case "docker compose version --short":
+				return hosts.Result{Stdout: "2.29.0\n"}, nil
+			case "ollama --version":
+				return hosts.Result{Stdout: "ollama version is 0.5.1\n"}, nil
+			case "openclaw --version":
+				return hosts.Result{Stdout: "OpenClaw 2026.10.5"}, nil
+			default:
+				return hosts.Result{ExitCode: 0}, nil
+			}
+		},
+	}
+	caps := DetectCapabilities(context.Background(), exec)
+	if caps.OS != "Linux" || caps.Arch != "x86_64" || !caps.SystemdAvailable || !caps.SystemdUserAvailable ||
+		!caps.JournalctlAvailable || !caps.DockerAvailable || !caps.DockerComposeAvailable ||
+		!caps.OllamaAvailable || !caps.OpenClaw.Installed {
+		t.Errorf("unexpected capabilities: %+v", caps)
+	}
+}

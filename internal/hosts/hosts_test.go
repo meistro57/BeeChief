@@ -125,6 +125,30 @@ func TestSSHArgsDefaultsAndQuoting(t *testing.T) {
 	}
 }
 
+func TestSSHConnectionMultiplexingArgs(t *testing.T) {
+	s := &SSHExecution{
+		Host:           "qmu-server",
+		User:           "root",
+		ControlMaster:  true,
+		ControlPersist: "90s",
+		ControlPath:    "/tmp/bc-test-%C",
+	}
+	got := s.Args("true")
+	want := []string{
+		"-T",
+		"-o", "BatchMode=yes",
+		"-o", "ConnectTimeout=10",
+		"-o", "ControlMaster=auto",
+		"-o", "ControlPersist=90s",
+		"-o", "ControlPath=/tmp/bc-test-%C",
+		"-l", "root",
+		"--", "qmu-server", "true",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Multiplex Args:\n got  %q\n want %q", got, want)
+	}
+}
+
 func TestForHive(t *testing.T) {
 	e, err := ForHive(config.Hive{Name: "work-pc", Type: config.TypeLocal})
 	if err != nil {

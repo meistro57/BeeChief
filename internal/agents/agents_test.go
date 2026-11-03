@@ -71,3 +71,27 @@ func TestFilterBeesAndLastScanTime(t *testing.T) {
 		t.Errorf("FilterBees(beta): got %+v", byHive)
 	}
 }
+
+func TestFilterBeesStructuredAndLargeSwarmQueries(t *testing.T) {
+	inv := NewInventory()
+	inv.Record(HiveStatus{Hive: "alpha"}, []Bee{
+		{ID: "scout", Name: "Scout Bee", Runtime: "openai/gpt-5", Status: "ready", Default: true, Workspace: "/srv/scout"},
+		{ID: "worker", Name: "Worker Bee", Runtime: "ollama/llama3", Status: "busy", Default: false, Workspace: "/srv/worker"},
+	})
+	inv.Record(HiveStatus{Hive: "beta", Err: errors.New("unreachable")}, []Bee{
+		{ID: "queen", Name: "Queen", Runtime: "anthropic/claude", Status: "idle", Default: true},
+	})
+
+	if got := inv.FilterBees("hive:alpha model:ollama"); len(got) != 1 || got[0].ID != "worker" {
+		t.Errorf("FilterBees(hive:alpha model:ollama): got %+v", got)
+	}
+	if got := inv.FilterBees("default:true !hive:beta"); len(got) != 1 || got[0].ID != "scout" {
+		t.Errorf("FilterBees(default:true !hive:beta): got %+v", got)
+	}
+	if got := inv.FilterBees("status:online -llama3"); len(got) != 1 || got[0].ID != "scout" {
+		t.Errorf("FilterBees(status:online -llama3): got %+v", got)
+	}
+	if got := inv.FilterBees("status:offline"); len(got) != 1 || got[0].ID != "queen" {
+		t.Errorf("FilterBees(status:offline): got %+v", got)
+	}
+}

@@ -8,6 +8,8 @@
 # ~/.ssh/config, ssh-agent, and key files. BeeChief runs ssh in BatchMode,
 # so a host that would prompt for a password fails fast instead of hanging.
 
+version: 1
+
 hives:
   # The machine running BeeChief.
   - name: work-pc
@@ -21,3 +23,5 @@ hives:
     user: root
     # port: 22            # optional; defaults to your SSH config
     # label: Basement box # optional description
+    # controlMaster: true # optional; reuse SSH connection (default true on Unix)
+    # controlPersist: 60s # optional; keep SSH master open for 60s

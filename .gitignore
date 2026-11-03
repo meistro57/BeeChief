@@ -1,0 +1,5 @@
+# Binaries & release artifacts
+/beechief
+/beechief.exe
+/dist/
+/honey-report*.md

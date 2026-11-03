@@ -93,12 +93,76 @@ type ModelTroubleshootingReport struct {
 	Err                   string                    `json:"err,omitempty"`
 }
 
-// HiveServicesReport bundles systemd, Docker, and Model/Ollama reports for a Hive.
+// HostCapabilities summarizes the OS, kernel, architecture, and optional
+// runtime/service capabilities detected on a Hive.
+type HostCapabilities struct {
+	OS                     string                `json:"os,omitempty"`
+	Kernel                 string                `json:"kernel,omitempty"`
+	Arch                   string                `json:"arch,omitempty"`
+	SystemdAvailable       bool                  `json:"systemdAvailable"`
+	SystemdUserAvailable   bool                  `json:"systemdUserAvailable"`
+	JournalctlAvailable    bool                  `json:"journalctlAvailable"`
+	DockerAvailable        bool                  `json:"dockerAvailable"`
+	DockerComposeAvailable bool                  `json:"dockerComposeAvailable"`
+	OllamaAvailable        bool                  `json:"ollamaAvailable"`
+	OllamaVersion          string                `json:"ollamaVersion,omitempty"`
+	OpenClaw               openclaw.Capabilities `json:"openclaw"`
+}
+
+// HiveServicesReport bundles systemd, Docker, Model/Ollama, and capability
+// reports for a Hive.
 type HiveServicesReport struct {
-	Hive    string                     `json:"hive"`
-	Systemd SystemdReport              `json:"systemd"`
-	Docker  DockerReport               `json:"docker"`
-	Models  ModelTroubleshootingReport `json:"models"`
+	Hive         string                     `json:"hive"`
+	Capabilities HostCapabilities           `json:"capabilities"`
+	Systemd      SystemdReport              `json:"systemd"`
+	Docker       DockerReport               `json:"docker"`
+	Models       ModelTroubleshootingReport `json:"models"`
+}
+
+// DetectCapabilities probes the host OS/architecture, optional service tooling
+// (systemd system/user bus, journalctl, Docker, Docker Compose, Ollama), and
+// OpenClaw CLI subcommand capabilities on a Hive.
+func DetectCapabilities(ctx context.Context, exec hosts.Execution) HostCapabilities {
+	if exec == nil {
+		return HostCapabilities{}
+	}
+	var caps HostCapabilities
+	if uRes, err := exec.Run(ctx, "uname", "-s", "-r", "-m"); err == nil && uRes.Ok() {
+		fields := strings.Fields(strings.TrimSpace(uRes.Stdout))
+		if len(fields) >= 1 {
+			caps.OS = fields[0]
+		}
+		if len(fields) >= 2 {
+			caps.Kernel = fields[1]
+		}
+		if len(fields) >= 3 {
+			caps.Arch = fields[2]
+		}
+	}
+	if sdRes, err := exec.Run(ctx, "systemctl", "is-system-running"); err == nil && sdRes.ExitCode != 127 {
+		st := strings.TrimSpace(sdRes.Stdout + " " + sdRes.Stderr)
+		if st != "offline" && !strings.Contains(strings.ToLower(st), "not been booted with systemd") {
+			caps.SystemdAvailable = true
+		}
+	}
+	if sduRes, err := exec.Run(ctx, "systemctl", "--user", "is-system-running"); err == nil && sduRes.Ok() {
+		caps.SystemdUserAvailable = true
+	}
+	if jRes, err := exec.Run(ctx, "journalctl", "--version"); err == nil && jRes.Ok() {
+		caps.JournalctlAvailable = true
+	}
+	if dRes, err := exec.Run(ctx, "docker", "info", "--format", "{{.ServerVersion}}"); err == nil && dRes.Ok() {
+		caps.DockerAvailable = true
+	}
+	if dcRes, err := exec.Run(ctx, "docker", "compose", "version", "--short"); err == nil && dcRes.Ok() {
+		caps.DockerComposeAvailable = true
+	}
+	if olRes, err := exec.Run(ctx, "ollama", "--version"); err == nil && olRes.Ok() {
+		caps.OllamaAvailable = true
+		caps.OllamaVersion = strings.TrimSpace(firstNonEmpty(olRes.Stdout, olRes.Stderr))
+	}
+	caps.OpenClaw = openclaw.NewClient(exec).ProbeCapabilities(ctx)
+	return caps
 }
 
 // InspectAll runs capability-detected read-only inspection for systemd, Docker,
@@ -112,11 +176,25 @@ func InspectAll(ctx context.Context, hive string, exec hosts.Execution) *HiveSer
 			Models:  ModelTroubleshootingReport{Err: "no execution configured"},
 		}
 	}
+	sd := InspectSystemd(ctx, exec)
+	dk := InspectDocker(ctx, exec)
+	md := InspectModels(ctx, exec)
+	caps := DetectCapabilities(ctx, exec)
+	if sd.Available {
+		caps.SystemdAvailable = true
+	}
+	if dk.Available {
+		caps.DockerAvailable = true
+	}
+	if md.OllamaAvailable {
+		caps.OllamaAvailable = true
+	}
 	return &HiveServicesReport{
-		Hive:    hive,
-		Systemd: InspectSystemd(ctx, exec),
-		Docker:  InspectDocker(ctx, exec),
-		Models:  InspectModels(ctx, exec),
+		Hive:         hive,
+		Capabilities: caps,
+		Systemd:      sd,
+		Docker:       dk,
+		Models:       md,
 	}
 }
 

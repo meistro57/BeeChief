@@ -132,24 +132,101 @@ func (i *Inventory) AllBees() []Bee {
 	return out
 }
 
-// FilterBees returns discovered Bees whose ID, display name, Hive, or runtime
-// contains query (case-insensitive). An empty query returns AllBees().
+// FilterBees returns discovered Bees matching query.
+//
+// It supports both free-text multi-word substring search (across ID, display
+// name, Hive, model/runtime, status, workspace, and hive/id key) and structured
+// filter tokens for large swarms:
+//   - `hive:<name>` / `host:<name>`
+//   - `model:<substr>` / `runtime:<substr>`
+//   - `id:<substr>` / `name:<substr>`
+//   - `status:<substr>` (including `status:online` / `status:offline` for Hive state)
+//   - `default:true` / `default:false`
+//   - `workspace:<substr>`
+//   - `!token` or `-token` to negate any token or field filter
+//
+// Multiple whitespace-separated tokens are combined with logical AND. An empty
+// query returns AllBees().
 func (i *Inventory) FilterBees(query string) []Bee {
 	all := i.AllBees()
-	q := strings.ToLower(strings.TrimSpace(query))
+	q := strings.TrimSpace(query)
 	if q == "" {
 		return all
 	}
+	tokens := strings.Fields(strings.ToLower(q))
 	var out []Bee
 	for _, b := range all {
-		if strings.Contains(strings.ToLower(b.ID), q) ||
-			strings.Contains(strings.ToLower(b.DisplayName()), q) ||
-			strings.Contains(strings.ToLower(b.Hive), q) ||
-			strings.Contains(strings.ToLower(b.Runtime), q) {
+		hiveOnline := true
+		if i != nil && i.Status != nil {
+			if st, ok := i.Status[b.Hive]; ok {
+				hiveOnline = st.OK()
+			}
+		}
+		if matchBeeTokens(b, hiveOnline, tokens) {
 			out = append(out, b)
 		}
 	}
 	return out
+}
+
+func matchBeeTokens(b Bee, hiveOnline bool, tokens []string) bool {
+	for _, tok := range tokens {
+		negate := false
+		if strings.HasPrefix(tok, "!") && len(tok) > 1 {
+			negate = true
+			tok = tok[1:]
+		} else if strings.HasPrefix(tok, "-") && len(tok) > 1 {
+			negate = true
+			tok = tok[1:]
+		}
+		matched := matchSingleBeeToken(b, hiveOnline, tok)
+		if negate {
+			matched = !matched
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
+}
+
+func matchSingleBeeToken(b Bee, hiveOnline bool, tok string) bool {
+	sep := strings.IndexAny(tok, ":=")
+	if sep > 0 && sep < len(tok)-1 {
+		field := tok[:sep]
+		val := tok[sep+1:]
+		switch field {
+		case "hive", "host":
+			return strings.Contains(strings.ToLower(b.Hive), val)
+		case "model", "runtime":
+			return strings.Contains(strings.ToLower(b.Runtime), val)
+		case "id":
+			return strings.Contains(strings.ToLower(b.ID), val)
+		case "name":
+			return strings.Contains(strings.ToLower(b.DisplayName()), val)
+		case "workspace", "dir":
+			return strings.Contains(strings.ToLower(b.Workspace), val) ||
+				strings.Contains(strings.ToLower(b.AgentDir), val)
+		case "status", "state":
+			if val == "online" {
+				return hiveOnline
+			}
+			if val == "offline" {
+				return !hiveOnline
+			}
+			return strings.Contains(strings.ToLower(b.Status), val)
+		case "default":
+			wantDefault := val == "true" || val == "yes" || val == "1"
+			return b.Default == wantDefault
+		}
+	}
+	return strings.Contains(strings.ToLower(b.ID), tok) ||
+		strings.Contains(strings.ToLower(b.DisplayName()), tok) ||
+		strings.Contains(strings.ToLower(b.Hive), tok) ||
+		strings.Contains(strings.ToLower(b.Runtime), tok) ||
+		strings.Contains(strings.ToLower(b.Status), tok) ||
+		strings.Contains(strings.ToLower(b.Workspace), tok) ||
+		strings.Contains(strings.ToLower(b.Key()), tok)
 }
 
 // LastScanTime returns the most recent ScannedAt timestamp across all Hives,

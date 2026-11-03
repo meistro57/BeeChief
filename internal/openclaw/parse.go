@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/meistro57/beechief/internal/agents"
@@ -13,52 +15,103 @@ import (
 // When the CLI's format changes, only this file should need updating.
 
 // agentJSON mirrors one entry of `openclaw agents list --json`. Every field
-// is optional; unknown fields are ignored.
+// is optional; unknown fields are ignored. Snake_case aliases are accepted
+// for compatibility across OpenClaw versions.
 type agentJSON struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	IdentityName  string `json:"identityName"`
-	IdentityEmoji string `json:"identityEmoji"`
-	Workspace     string `json:"workspace"`
-	AgentDir      string `json:"agentDir"`
-	Model         string `json:"model"`
-	Status        string `json:"status"`
-	IsDefault     bool   `json:"isDefault"`
+	ID                string `json:"id"`
+	AgentID           string `json:"agent_id"`
+	Name              string `json:"name"`
+	IdentityName      string `json:"identityName"`
+	IdentityNameSnake string `json:"identity_name"`
+	IdentityEmoji     string `json:"identityEmoji"`
+	EmojiSnake        string `json:"identity_emoji"`
+	EmojiShort        string `json:"emoji"`
+	Workspace         string `json:"workspace"`
+	WorkspaceDir      string `json:"workspaceDir"`
+	AgentDir          string `json:"agentDir"`
+	AgentDirSnake     string `json:"agent_dir"`
+	Model             string `json:"model"`
+	Runtime           string `json:"runtime"`
+	Status            string `json:"status"`
+	IsDefault         bool   `json:"isDefault"`
+	IsDefaultSnake    bool   `json:"is_default"`
+	Default           bool   `json:"default"`
 }
 
 // ParseAgents decodes `openclaw agents list --json` output into Bees (with
 // Hive left empty for the caller to fill in).
 //
-// It accepts either a bare JSON array or an object with an "agents" array,
+// It accepts either a bare JSON array, an object with an "agents"/"items"/"data"
+// array, or a structured `Agents:` plain-text listing from older CLI versions,
 // and tolerates non-JSON lines (banners, warnings) before the document.
 // Entries with neither an id nor a name are skipped.
 func ParseAgents(data []byte) ([]agents.Bee, error) {
 	raw, err := decodeAgentList(data)
 	if err != nil {
+		if bees, ok := parsePlainTextAgents(string(data)); ok {
+			return bees, nil
+		}
 		return nil, fmt.Errorf("%w: %v", ErrInvalidOutput, err)
 	}
 	bees := make([]agents.Bee, 0, len(raw))
 	for _, a := range raw {
-		id := strings.TrimSpace(a.ID)
-		if id == "" {
-			id = strings.TrimSpace(a.Name)
-		}
+		id := firstNonEmpty(a.ID, a.AgentID, a.Name)
 		if id == "" {
 			continue
 		}
-		name := firstNonEmpty(a.IdentityName, a.Name, id)
+		name := firstNonEmpty(a.IdentityName, a.IdentityNameSnake, a.Name, id)
 		bees = append(bees, agents.Bee{
 			ID:        id,
 			Name:      name,
-			Runtime:   a.Model,
-			Emoji:     a.IdentityEmoji,
-			Workspace: a.Workspace,
-			AgentDir:  a.AgentDir,
+			Runtime:   firstNonEmpty(a.Model, a.Runtime),
+			Emoji:     firstNonEmpty(a.IdentityEmoji, a.EmojiSnake, a.EmojiShort),
+			Workspace: firstNonEmpty(a.Workspace, a.WorkspaceDir),
+			AgentDir:  firstNonEmpty(a.AgentDir, a.AgentDirSnake),
 			Status:    a.Status,
-			Default:   a.IsDefault,
+			Default:   a.IsDefault || a.IsDefaultSnake || a.Default,
 		})
 	}
 	return bees, nil
+}
+
+// parsePlainTextAgents parses legacy plain-text `openclaw agents list` output
+// when preceded by an explicit `Agents:` header.
+func parsePlainTextAgents(text string) ([]agents.Bee, bool) {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "Agents:") {
+		return nil, false
+	}
+	var bees []agents.Bee
+	for _, line := range strings.Split(trimmed, "\n")[1:] {
+		line = strings.TrimSpace(line)
+		line = strings.TrimPrefix(line, "-")
+		line = strings.TrimPrefix(line, "*")
+		line = strings.TrimSpace(line)
+		if line == "" || strings.EqualFold(line, "(none)") || strings.EqualFold(line, "none") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		b := agents.Bee{ID: fields[0], Name: fields[0]}
+		for _, tok := range fields[1:] {
+			switch {
+			case tok == "[default]" || tok == "(default)":
+				b.Default = true
+			case strings.HasPrefix(tok, "model="):
+				b.Runtime = strings.TrimPrefix(tok, "model=")
+			case strings.HasPrefix(tok, "workspace="):
+				b.Workspace = strings.TrimPrefix(tok, "workspace=")
+			case strings.HasPrefix(tok, "status="):
+				b.Status = strings.TrimPrefix(tok, "status=")
+			case strings.HasPrefix(tok, "(") && strings.HasSuffix(tok, ")") && len(tok) > 2:
+				b.Name = tok[1 : len(tok)-1]
+			}
+		}
+		bees = append(bees, b)
+	}
+	return bees, true
 }
 
 func decodeAgentList(data []byte) ([]agentJSON, error) {
@@ -103,14 +156,22 @@ func decodeFirstValue(data []byte) ([]agentJSON, error) {
 	case '{':
 		var wrapped struct {
 			Agents *[]agentJSON `json:"agents"`
+			Items  *[]agentJSON `json:"items"`
+			Data   *[]agentJSON `json:"data"`
 		}
 		if err := json.Unmarshal(v, &wrapped); err != nil {
 			return nil, err
 		}
-		if wrapped.Agents == nil {
+		switch {
+		case wrapped.Agents != nil:
+			return *wrapped.Agents, nil
+		case wrapped.Items != nil:
+			return *wrapped.Items, nil
+		case wrapped.Data != nil:
+			return *wrapped.Data, nil
+		default:
 			return nil, fmt.Errorf("object has no \"agents\" array")
 		}
-		return *wrapped.Agents, nil
 	default:
 		return nil, fmt.Errorf("expected JSON array or object, got %.20q", v)
 	}
@@ -374,10 +435,14 @@ func checkCLIErrorObject(raw json.RawMessage) error {
 }
 
 // ParseSkillList decodes `openclaw skills list --json` output. It accepts
-// either `{"skills": [...]}` or a bare `[...]` array.
+// `{"skills": [...]}`, `{"items": [...]}`, a bare `[...]` array, or a
+// structured `Skills:` plain-text listing from older CLI versions.
 func ParseSkillList(data []byte) (*SkillListReport, error) {
 	raw, err := extractFirstJSON(data)
 	if err != nil {
+		if rep, ok := parsePlainTextSkillList(string(data)); ok {
+			return rep, nil
+		}
 		return nil, fmt.Errorf("%w: %v", ErrInvalidOutput, err)
 	}
 	if err := checkCLIErrorObject(raw); err != nil {
@@ -391,23 +456,89 @@ func ParseSkillList(data []byte) (*SkillListReport, error) {
 		}
 		return &SkillListReport{Skills: skills}, nil
 	case '{':
-		var rep SkillListReport
+		var rep struct {
+			AgentID          string   `json:"agentId"`
+			AgentIDSnake     string   `json:"agent_id"`
+			WorkspaceDir     string   `json:"workspaceDir"`
+			ManagedSkillsDir string   `json:"managedSkillsDir"`
+			Skills           *[]Skill `json:"skills"`
+			Items            *[]Skill `json:"items"`
+			Data             *[]Skill `json:"data"`
+		}
 		if err := json.Unmarshal(raw, &rep); err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrInvalidOutput, err)
 		}
-		if rep.Skills == nil {
+		var skills []Skill
+		switch {
+		case rep.Skills != nil:
+			skills = *rep.Skills
+		case rep.Items != nil:
+			skills = *rep.Items
+		case rep.Data != nil:
+			skills = *rep.Data
+		default:
 			return nil, fmt.Errorf("%w: object has no \"skills\" array", ErrInvalidOutput)
 		}
-		return &rep, nil
+		return &SkillListReport{
+			AgentID:          firstNonEmpty(rep.AgentID, rep.AgentIDSnake),
+			WorkspaceDir:     rep.WorkspaceDir,
+			ManagedSkillsDir: rep.ManagedSkillsDir,
+			Skills:           skills,
+		}, nil
 	default:
 		return nil, fmt.Errorf("%w: unexpected JSON root", ErrInvalidOutput)
 	}
 }
 
-// ParseSkillCheck decodes `openclaw skills check --json` output.
+func parsePlainTextSkillList(text string) (*SkillListReport, bool) {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "Skills:") {
+		return nil, false
+	}
+	rep := &SkillListReport{}
+	for _, line := range strings.Split(trimmed, "\n")[1:] {
+		line = strings.TrimSpace(line)
+		line = strings.TrimPrefix(line, "-")
+		line = strings.TrimPrefix(line, "*")
+		line = strings.TrimSpace(line)
+		if line == "" || strings.EqualFold(line, "(none)") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		sk := Skill{Name: fields[0], Eligible: true, ModelVisible: true}
+		if len(fields) > 1 {
+			switch strings.ToLower(fields[1]) {
+			case "[disabled]", "(disabled)":
+				sk.Disabled = true
+				sk.Eligible = false
+				sk.Description = strings.Join(fields[2:], " ")
+			case "[missing]", "(missing)":
+				sk.Eligible = false
+				sk.Description = strings.Join(fields[2:], " ")
+			case "[ready]", "(ready)":
+				sk.Description = strings.Join(fields[2:], " ")
+			default:
+				sk.Description = strings.Join(fields[1:], " ")
+			}
+			sk.Description = strings.TrimSpace(strings.TrimPrefix(sk.Description, "—"))
+			sk.Description = strings.TrimSpace(strings.TrimPrefix(sk.Description, "-"))
+		}
+		rep.Skills = append(rep.Skills, sk)
+	}
+	return rep, true
+}
+
+// ParseSkillCheck decodes `openclaw skills check --json` output (or structured
+// plain-text skill check output from older CLI versions).
 func ParseSkillCheck(data []byte) (*SkillCheckReport, error) {
 	raw, err := extractFirstJSON(data)
 	if err != nil {
+		if rep, ok := parsePlainTextSkillCheck(string(data)); ok {
+			return rep, nil
+		}
 		return nil, fmt.Errorf("%w: %v", ErrInvalidOutput, err)
 	}
 	if err := checkCLIErrorObject(raw); err != nil {
@@ -425,6 +556,31 @@ func ParseSkillCheck(data []byte) (*SkillCheckReport, error) {
 		rep.Summary.Total = len(rep.Eligible) + len(rep.Disabled) + len(rep.MissingRequirements)
 	}
 	return &rep, nil
+}
+
+func parsePlainTextSkillCheck(text string) (*SkillCheckReport, bool) {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "Skill Check:") && !strings.HasPrefix(trimmed, "Summary:") {
+		return nil, false
+	}
+	rep := &SkillCheckReport{}
+	for _, line := range strings.Split(trimmed, "\n") {
+		lower := strings.ToLower(strings.TrimSpace(line))
+		for _, part := range strings.Split(lower, ",") {
+			part = strings.TrimSpace(part)
+			if strings.HasPrefix(part, "total:") {
+				rep.Summary.Total, _ = strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(part, "total:")))
+			} else if strings.HasPrefix(part, "eligible:") || strings.HasPrefix(part, "ready:") {
+				val := strings.TrimPrefix(strings.TrimPrefix(part, "eligible:"), "ready:")
+				rep.Summary.Eligible, _ = strconv.Atoi(strings.TrimSpace(val))
+			} else if strings.HasPrefix(part, "disabled:") {
+				rep.Summary.Disabled, _ = strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(part, "disabled:")))
+			} else if strings.HasPrefix(part, "missing:") {
+				rep.Summary.MissingRequirements, _ = strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(part, "missing:")))
+			}
+		}
+	}
+	return rep, true
 }
 
 // ParseWorkshopList decodes `openclaw skills workshop list --json` (or plain
@@ -546,10 +702,14 @@ func ParseAgentReply(data []byte) string {
 	return strings.TrimSpace(string(raw))
 }
 
-// ParseModelsStatus decodes `openclaw models status --json` output.
+// ParseModelsStatus decodes `openclaw models status --json` output (or plain
+// text output from older OpenClaw versions).
 func ParseModelsStatus(data []byte) (*ModelStatusReport, error) {
 	raw, err := extractFirstJSON(data)
 	if err != nil {
+		if rep, ok := parsePlainTextModelsStatus(string(data)); ok {
+			return rep, nil
+		}
 		return nil, fmt.Errorf("%w: %v", ErrInvalidOutput, err)
 	}
 	if err := checkCLIErrorObject(raw); err != nil {
@@ -559,17 +719,23 @@ func ParseModelsStatus(data []byte) (*ModelStatusReport, error) {
 		return nil, fmt.Errorf("%w: expected JSON object", ErrInvalidOutput)
 	}
 	var wire struct {
-		ConfigPath      string   `json:"configPath"`
-		AgentDir        string   `json:"agentDir"`
-		DefaultModel    string   `json:"defaultModel"`
-		ResolvedDefault string   `json:"resolvedDefault"`
-		Fallbacks       []string `json:"fallbacks"`
-		Allowed         []string `json:"allowed"`
-		Auth            struct {
+		ConfigPath            string           `json:"configPath"`
+		AgentDir              string           `json:"agentDir"`
+		DefaultModel          string           `json:"defaultModel"`
+		DefaultModelSnake     string           `json:"default_model"`
+		ResolvedDefault       string           `json:"resolvedDefault"`
+		Fallbacks             []string         `json:"fallbacks"`
+		Allowed               []string         `json:"allowed"`
+		MissingProvidersInUse []string         `json:"missingProvidersInUse"`
+		ModelRouteIssues      []string         `json:"modelRouteIssues"`
+		Providers             []ProviderStatus `json:"providers"`
+		Auth                  struct {
 			MissingProvidersInUse []string `json:"missingProvidersInUse"`
 			ModelRouteIssues      []string `json:"modelRouteIssues"`
 			Providers             []struct {
 				Provider  string `json:"provider"`
+				Kind      string `json:"kind"`
+				Detail    string `json:"detail"`
 				Effective struct {
 					Kind   string `json:"kind"`
 					Detail string `json:"detail"`
@@ -580,24 +746,109 @@ func ParseModelsStatus(data []byte) (*ModelStatusReport, error) {
 	if err := json.Unmarshal(raw, &wire); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidOutput, err)
 	}
+	missing := wire.Auth.MissingProvidersInUse
+	if len(missing) == 0 {
+		missing = wire.MissingProvidersInUse
+	}
+	issues := wire.Auth.ModelRouteIssues
+	if len(issues) == 0 {
+		issues = wire.ModelRouteIssues
+	}
 	rep := &ModelStatusReport{
 		ConfigPath:            wire.ConfigPath,
 		AgentDir:              wire.AgentDir,
-		DefaultModel:          wire.DefaultModel,
+		DefaultModel:          firstNonEmpty(wire.DefaultModel, wire.DefaultModelSnake),
 		ResolvedDefault:       wire.ResolvedDefault,
 		Fallbacks:             wire.Fallbacks,
 		Allowed:               wire.Allowed,
-		MissingProvidersInUse: wire.Auth.MissingProvidersInUse,
-		ModelRouteIssues:      wire.Auth.ModelRouteIssues,
+		MissingProvidersInUse: missing,
+		ModelRouteIssues:      issues,
 	}
 	for _, p := range wire.Auth.Providers {
 		rep.Providers = append(rep.Providers, ProviderStatus{
 			Provider: p.Provider,
-			Kind:     p.Effective.Kind,
-			Detail:   p.Effective.Detail,
+			Kind:     firstNonEmpty(p.Effective.Kind, p.Kind),
+			Detail:   firstNonEmpty(p.Effective.Detail, p.Detail),
 		})
 	}
+	if len(rep.Providers) == 0 && len(wire.Providers) > 0 {
+		rep.Providers = append(rep.Providers, wire.Providers...)
+	}
 	return rep, nil
+}
+
+func parsePlainTextModelsStatus(text string) (*ModelStatusReport, bool) {
+	trimmed := strings.TrimSpace(text)
+	if !strings.Contains(strings.ToLower(trimmed), "default model:") {
+		return nil, false
+	}
+	rep := &ModelStatusReport{}
+	for _, line := range strings.Split(trimmed, "\n") {
+		line = strings.TrimSpace(line)
+		lower := strings.ToLower(line)
+		if strings.HasPrefix(lower, "default model:") {
+			rep.DefaultModel = strings.TrimSpace(line[len("default model:"):])
+		} else if strings.HasPrefix(lower, "allowed:") {
+			for _, p := range strings.Split(line[len("allowed:"):], ",") {
+				if m := strings.TrimSpace(p); m != "" {
+					rep.Allowed = append(rep.Allowed, m)
+				}
+			}
+		}
+	}
+	return rep, rep.DefaultModel != ""
+}
+
+// VersionInfo holds structured version numbers extracted from OpenClaw's
+// `--version` output (supporting both SemVer and CalVer like `2026.10.5`).
+type VersionInfo struct {
+	Raw     string `json:"raw"`
+	Version string `json:"version"`
+	Major   int    `json:"major"`
+	Minor   int    `json:"minor"`
+	Patch   int    `json:"patch"`
+	Valid   bool   `json:"valid"`
+}
+
+// AtLeast reports whether v is at least major.minor.patch. If v could not be
+// parsed into numeric components, it returns false.
+func (v VersionInfo) AtLeast(major, minor, patch int) bool {
+	if !v.Valid {
+		return false
+	}
+	if v.Major != major {
+		return v.Major > major
+	}
+	if v.Minor != minor {
+		return v.Minor > minor
+	}
+	return v.Patch >= patch
+}
+
+var versionNumberRE = regexp.MustCompile(`v?(\d+)\.(\d+)(?:\.(\d+))?`)
+
+// ParseVersionInfo extracts both the display string and numeric version tuple
+// from OpenClaw `--version` output.
+func ParseVersionInfo(out string) VersionInfo {
+	concise := ParseVersion(out)
+	info := VersionInfo{Raw: concise, Version: concise}
+	m := versionNumberRE.FindStringSubmatch(concise)
+	if len(m) >= 3 {
+		maj, err1 := strconv.Atoi(m[1])
+		min, err2 := strconv.Atoi(m[2])
+		pat := 0
+		if len(m) >= 4 && m[3] != "" {
+			pat, _ = strconv.Atoi(m[3])
+		}
+		if err1 == nil && err2 == nil {
+			info.Major = maj
+			info.Minor = min
+			info.Patch = pat
+			info.Valid = true
+			info.Version = fmt.Sprintf("%d.%d.%d", maj, min, pat)
+		}
+	}
+	return info
 }
 
 // ParseVersion extracts the concise OpenClaw version string from CLI output.

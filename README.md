@@ -20,6 +20,24 @@ Nothing agent-specific should be hard-coded.
 
 ## Quick start
 
+### Install or update via script (Linux / macOS / Windows)
+
+```bash
+# Linux / macOS (release binary or local --from-source build)
+./scripts/install.sh --from-source
+
+# Cross-platform release archives (Linux, Windows, macOS)
+make release
+```
+
+On Windows PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -FromSource
+```
+
+### Run from source
+
 ```bash
 go build ./...
 mkdir -p ~/.config/beechief
@@ -27,7 +45,7 @@ cp configs/hosts.example.yaml ~/.config/beechief/hosts.yaml   # then edit
 go run ./cmd/beechief
 ```
 
-With no config file BeeChief still starts, with zero Hives, and you can add local or SSH Hives interactively from **Settings**. Set `BEECHIEF_CONFIG=/path/to/hosts.yaml` to use a different file.
+With no config file BeeChief still starts, with zero Hives, and you can add local or SSH Hives interactively from **Settings**. Set `BEECHIEF_CONFIG=/path/to/hosts.yaml` to use a different file, or `NO_COLOR=1` for high-contrast plain-text accessibility mode.
 
 To generate and export a portable, secret-redacted **Honey Report** from the CLI:
 
@@ -39,9 +57,11 @@ Keys: `↑/↓` (or `k/j`) move · `enter` select · `/` filter/search · `r` re
 
 ## Configuring Hives
 
-Only machines are configured. Agents are never listed in config.
+Only machines are configured. Agents are never listed in config. Configuration files use schema `version: 1` (legacy v0 files and `hosts:`/`hostname:`/`username:` aliases are migrated automatically on load and upgraded on save).
 
 ```yaml
+version: 1
+
 hives:
   - name: work-pc
     type: local
@@ -52,16 +72,21 @@ hives:
     user: root         # optional
     # port: 22         # optional
     # label: Basement  # optional
+    # control_master: true   # optional (default true on Unix; reuses SSH master socket)
+    # control_persist: 60s   # optional
 ```
 
 | Field   | Required  | Notes |
 |---------|-----------|-------|
+| `version` | no      | Schema version (`1`). Legacy `0`/omitted configs migrate automatically; newer unknown versions fail safely. |
 | `name`  | yes       | Unique Hive identifier shown in the UI. |
 | `type`  | no        | `local` or `ssh`. If you leave it out, an empty `host` (or `host: local`) means local; anything else means ssh. |
 | `host`  | for ssh   | Passed to the system `ssh` client as-is. |
 | `user`  | no        | `ssh -l`. |
 | `port`  | no        | `ssh -p`. |
 | `label` | no        | Free-text description. |
+| `control_master` | no | Enable OpenSSH `ControlMaster=auto` connection reuse (default `true` on Linux/macOS). |
+| `control_persist` | no | Idle duration for multiplexed SSH master sockets (default `60s`). |
 
 Unknown keys are rejected, so a typo (or a stray `password:`) fails loudly.
 
@@ -94,14 +119,15 @@ interactive-only guard, or `~/.ssh/environment` where it is enabled).
 
 ## Features & Workflows
 
-### Swarm Overview & Bee Detail (`#4`)
+### Swarm Overview & Bee Detail (`#4`, `v0.5`)
 - View total Hive count, total Bee count, per-Hive online/offline state, and last scan time.
-- Filter discovered Bees interactively with `/`.
+- Filter discovered Bees interactively with `/`, supporting multi-token boolean AND queries, negation (`!token` / `-token`), and field-scoped selectors (`hive:`, `model:`, `id:`, `name:`, `status:online`/`status:offline`, `default:true`).
+- Large swarms automatically window/paginate lists cleanly to fit any terminal height (`[showing X–Y of N]`).
 - Select any Bee (`enter`) to inspect its status, visible skills, skill check, self-review, Workshop proposals, curator/learning status, model status, or send a custom instruction.
 
-### Comb / Skills Inspection (`#5`)
-- Wraps `openclaw skills list --agent <id> --json` and `openclaw skills check --agent <id> --json`.
-- Highlights ready/loadable skills vs. broken or missing-requirement skills (`bins`, `anyBins`, `env`, `config`, `os`).
+### Comb / Skills Inspection (`#5`, `v0.5`)
+- Wraps `openclaw skills list --agent <id> --json` and `openclaw skills check --agent <id> --json`, with automatic fallback to plain-text CLI output on older OpenClaw versions that lack `--json`.
+- Highlights ready/loadable skills vs. broken or missing-requirement skills (`bins`, `anyBins`, `env`, `config`, `os`), and supports interactive `/` skill filtering.
 - Surfaces unsupported OpenClaw CLI versions clearly and allows toggling raw CLI output (`v`) for troubleshooting.
 
 ### Self-Review, Workshop Proposals & Swarm Review (`#6`, `#10`)
@@ -113,8 +139,9 @@ interactive-only guard, or `~/.ssh/environment` where it is enabled).
 - **Hive Health (`Troubleshooting`)**: Runs 11 read-only checks (reachability, OpenClaw CLI version, Gateway health, agent discovery, disk free space, RAM, swap, model providers, Docker, systemd, and recent service failures) with severity sorting (`s`).
 - **Services (`Services`)**: Capability-detected inspection for **systemd** units (status, enabled state, recent logs, plus `S`/`T`/`R` start/stop/restart gated behind an explicit `[y/N]` confirmation prompt), **Docker** containers (state, ports, non-streaming CPU/RAM stats, recent logs), and **Models & Ollama** (detects mismatches between OpenClaw's configured models and reachable providers/local Ollama models).
 
-### Unified Log Browser (`#9`)
-- Browse bounded tails across `journalctl`, `docker`, `openclaw` Gateway logs, and `agent` status output on any Hive.
+### Unified Log Browser & Event Persistence (`#9`, `v0.5`)
+- Browse bounded tails across `journalctl`, `docker`, `openclaw` Gateway logs, `agent` status output, and persistent BeeChief `events` on any Hive.
+- Operational events (scans, skill checks, self-reviews, Hive Health passes, systemd actions, Honey Report exports, config saves) are automatically redacted of secrets and persisted to a size-rotated JSONL log (`~/.config/beechief/events.jsonl`).
 - Filter by errors-only (`e`), warnings+errors (`w`), or text search (`/`).
 - Toggle non-blocking follow mode (`f`) and inspect the exact underlying CLI command (`c`). All remote output is stripped of ANSI/control sequences.
 
@@ -143,7 +170,7 @@ interactive-only guard, or `~/.ssh/environment` where it is enabled).
 | **Swarm Overview / Troubleshooting** | `e` | Export portable, secret-redacted Honey Report |
 | **Bee Detail** | `enter` | Execute selected Bee action (status, Comb, check, review, Workshop, curator, model, custom instruction) |
 | **Comb / Skills** | `[` / `]` | Switch active Bee |
-| **Comb / Skills** | `l` / `c` / `v` | List skills (`l`), run skill check (`c`), toggle raw CLI output (`v`) |
+| **Comb / Skills** | `l` / `c` / `/` / `v` | List skills (`l`), run skill check (`c`), filter skills (`/`), toggle raw CLI output (`v`) |
 | **Self Review** | `s` / `w` / `enter` | Run Bee self-review (`s`), refresh Workshop list (`w`), inspect proposal (`enter`) |
 | **Self Review (Swarm)** | `1` / `2` / `3` / `x` | Run Swarm Review on selected Bee (`1`), Hive (`2`), or all reachable Hives (`3`); cancel (`x`) |
 | **Troubleshooting** | `[` / `]` / `h` / `s` | Switch Hive (`[`/`]`), run Hive Health pass (`h`), toggle severity sort (`s`) |
@@ -161,12 +188,23 @@ interactive-only guard, or `~/.ssh/environment` where it is enabled).
 | `beechief diagnose` | Run a read-only fleet diagnostic pass and print the redacted Markdown Honey Report to stdout |
 | `beechief diagnose --export` | Export the redacted Honey Report to `honey-report-<timestamp>.md` |
 | `beechief diagnose --export -o <path>` | Export the redacted Honey Report to `<path>` |
+| `beechief version` / `--version` | Print the BeeChief release version |
 
-## Development
+### Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `BEECHIEF_CONFIG` | `~/.config/beechief/hosts.yaml` | Override the path to the Hive YAML configuration file |
+| `BEECHIEF_EVENTS` | `~/.config/beechief/events.jsonl` | Override the path to the persistent redacted JSONL event log |
+| `NO_COLOR` | *(unset)* | Disable ANSI color styling and render plain-text status glyphs (`[OK]`, `[ERR]`, `[WARN]`) |
+
+## Development & Release Builds
 
 ```bash
-go build ./...
-go test ./...
+make build      # Build ./beechief with version ldflags
+make test       # Run go vet and go test -race ./...
+make release    # Build Linux, Windows, and macOS release archives + SHA256SUMS.txt into dist/
+make install    # Install beechief to ~/.local/bin (or PREFIX)
 ```
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the package layout and design choices.
@@ -187,12 +225,13 @@ Visual assets live in [`assets/`](assets/):
 
 ## Status
 
-Implemented through v0.4:
+Implemented through v0.5 (Hardening):
 - TUI navigation, Swarm Overview, and Bee detail screens (#1, #4)
-- Hive configuration, interactive configuration wizard, and local/SSH execution (#2, #12)
-- Dynamic OpenClaw agent discovery (#3)
-- Comb skill inspection and per-Bee skill checks (#5)
+- Hive configuration, schema versioning/migration, interactive configuration wizard, and local/SSH execution with `ControlMaster` connection reuse (#2, #12, v0.5)
+- Dynamic OpenClaw agent discovery and cross-version CLI compatibility (#3, v0.5)
+- Comb skill inspection, interactive skill filtering, and per-Bee skill checks (#5, v0.5)
 - Bee self-review, Workshop proposal inspection, and multi-Bee Swarm Review (#6, #10)
-- Hive Health quick diagnostics and systemd/Docker/Ollama/model troubleshooting (#7, #8)
-- Unified log browser with filtering and follow mode (#9)
+- Rich capability detection, Hive Health quick diagnostics, and systemd/Docker/Ollama/model troubleshooting (#7, #8, v0.5)
+- Unified log browser with filtering, follow mode, and persistent secret-redacted JSONL event store (#9, v0.5)
 - Portable, secret-redacted Honey Report export via CLI and TUI (#11)
+- Cross-platform release packaging (Linux, Windows, macOS), GitHub Actions CI/Release workflows, install scripts, `NO_COLOR` accessibility, and large-swarm viewport windowing (v0.5)
