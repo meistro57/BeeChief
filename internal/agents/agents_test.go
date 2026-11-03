@@ -3,6 +3,7 @@ package agents
 import (
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestRecordStampsHiveAndSorts(t *testing.T) {
@@ -43,5 +44,30 @@ func TestCloneIsIndependent(t *testing.T) {
 func TestDisplayName(t *testing.T) {
 	if (Bee{ID: "id"}).DisplayName() != "id" || (Bee{ID: "id", Name: "N"}).DisplayName() != "N" {
 		t.Error("DisplayName fallback wrong")
+	}
+}
+
+func TestFilterBeesAndLastScanTime(t *testing.T) {
+	inv := NewInventory()
+	t1 := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	t2 := t1.Add(5 * time.Minute)
+	inv.Record(HiveStatus{Hive: "alpha", ScannedAt: t1}, []Bee{
+		{ID: "scout", Name: "Scout Bee", Runtime: "openai/gpt-5"},
+		{ID: "worker", Name: "Worker Bee", Runtime: "ollama/llama3"},
+	})
+	inv.Record(HiveStatus{Hive: "beta", ScannedAt: t2}, []Bee{
+		{ID: "queen", Name: "Queen", Runtime: "anthropic/claude"},
+	})
+	if got := inv.LastScanTime(); !got.Equal(t2) {
+		t.Errorf("LastScanTime: got %v, want %v", got, t2)
+	}
+	if all := inv.AllBees(); len(all) != 3 {
+		t.Fatalf("AllBees: got %d, want 3", len(all))
+	}
+	if filtered := inv.FilterBees("SCOUT"); len(filtered) != 1 || filtered[0].ID != "scout" {
+		t.Errorf("FilterBees(SCOUT): got %+v", filtered)
+	}
+	if byHive := inv.FilterBees("beta"); len(byHive) != 1 || byHive[0].ID != "queen" {
+		t.Errorf("FilterBees(beta): got %+v", byHive)
 	}
 }

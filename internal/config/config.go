@@ -167,3 +167,99 @@ func DefaultPath() string {
 	}
 	return filepath.Join(dir, "beechief", "hosts.yaml")
 }
+
+// AddHive validates h and appends it to c, rejecting duplicate names.
+func (c *Config) AddHive(h Hive) error {
+	h.Name = strings.TrimSpace(h.Name)
+	h.Host = strings.TrimSpace(h.Host)
+	h.User = strings.TrimSpace(h.User)
+	h.Label = strings.TrimSpace(h.Label)
+	if err := h.Validate(); err != nil {
+		return err
+	}
+	for _, existing := range c.Hives {
+		if existing.Name == h.Name {
+			return fmt.Errorf("duplicate hive name %q", h.Name)
+		}
+	}
+	c.Hives = append(c.Hives, h)
+	return nil
+}
+
+// UpdateHive replaces the Hive named oldName with h after validating the
+// resulting configuration.
+func (c *Config) UpdateHive(oldName string, h Hive) error {
+	h.Name = strings.TrimSpace(h.Name)
+	h.Host = strings.TrimSpace(h.Host)
+	h.User = strings.TrimSpace(h.User)
+	h.Label = strings.TrimSpace(h.Label)
+	if err := h.Validate(); err != nil {
+		return err
+	}
+	idx := -1
+	for i, existing := range c.Hives {
+		if existing.Name == oldName {
+			idx = i
+		} else if existing.Name == h.Name {
+			return fmt.Errorf("duplicate hive name %q", h.Name)
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("hive %q not found", oldName)
+	}
+	c.Hives[idx] = h
+	return nil
+}
+
+// RemoveHive deletes the Hive named name from c.
+func (c *Config) RemoveHive(name string) error {
+	for i, existing := range c.Hives {
+		if existing.Name == name {
+			c.Hives = append(c.Hives[:i], c.Hives[i+1:]...)
+			return nil
+		}
+	}
+	return fmt.Errorf("hive %q not found", name)
+}
+
+// Marshal encodes c as YAML after validating it.
+func Marshal(c Config) ([]byte, error) {
+	if err := c.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+	if c.Hives == nil {
+		c.Hives = []Hive{}
+	}
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(c); err != nil {
+		return nil, fmt.Errorf("encode config: %w", err)
+	}
+	if err := enc.Close(); err != nil {
+		return nil, fmt.Errorf("encode config: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+// Save validates and writes c to path, preserving existing file permissions
+// when the file already exists (defaulting to 0600 for new files).
+func Save(path string, c Config) error {
+	data, err := Marshal(c)
+	if err != nil {
+		return err
+	}
+	perm := fs.FileMode(0o600)
+	if info, statErr := os.Stat(path); statErr == nil {
+		perm = info.Mode().Perm()
+	}
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("create config directory: %w", err)
+		}
+	}
+	if err := os.WriteFile(path, data, perm); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+	return nil
+}

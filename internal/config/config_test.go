@@ -119,3 +119,49 @@ func TestDefaultPathEnvOverride(t *testing.T) {
 		t.Errorf("DefaultPath: got %q", got)
 	}
 }
+
+func TestConfigMutationAndRoundTripSave(t *testing.T) {
+	cfg := Default()
+	if err := cfg.AddHive(Hive{Name: "local-pc", Type: TypeLocal, Label: "Workstation"}); err != nil {
+		t.Fatalf("AddHive local: %v", err)
+	}
+	if err := cfg.AddHive(Hive{Name: "remote-1", Type: TypeSSH, Host: "10.0.0.5", User: "admin", Port: 2222}); err != nil {
+		t.Fatalf("AddHive ssh: %v", err)
+	}
+	// Duplicate rejected
+	if err := cfg.AddHive(Hive{Name: "local-pc", Type: TypeLocal}); err == nil {
+		t.Error("expected duplicate hive error")
+	}
+	// Update existing
+	if err := cfg.UpdateHive("remote-1", Hive{Name: "remote-1", Type: TypeSSH, Host: "10.0.0.6", User: "ops", Port: 22}); err != nil {
+		t.Fatalf("UpdateHive: %v", err)
+	}
+	// Save and preserve permissions
+	path := filepath.Join(t.TempDir(), "sub", "hosts.yaml")
+	if err := Save(path, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := os.Chmod(path, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.RemoveHive("local-pc"); err != nil {
+		t.Fatalf("RemoveHive: %v", err)
+	}
+	if err := Save(path, cfg); err != nil {
+		t.Fatalf("Save second time: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Errorf("permissions not preserved: got %o, want 0640", info.Mode().Perm())
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load after Save: %v", err)
+	}
+	if len(loaded.Hives) != 1 || loaded.Hives[0].Host != "10.0.0.6" || loaded.Hives[0].User != "ops" {
+		t.Errorf("round-trip mismatch: %+v", loaded.Hives)
+	}
+}

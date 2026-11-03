@@ -147,3 +147,182 @@ func TestDiscoverAgentsErrors(t *testing.T) {
 		}
 	}
 }
+
+const sampleSkillListFixture = `{
+  "workspaceDir": "/srv/oc/workspace",
+  "managedSkillsDir": "/srv/oc/skills",
+  "skills": [
+    {
+      "name": "github",
+      "description": "Manage GitHub issues and PRs.",
+      "emoji": "🐙",
+      "eligible": true,
+      "disabled": false,
+      "modelVisible": true,
+      "userInvocable": true,
+      "commandVisible": true,
+      "source": "openclaw-bundled",
+      "bundled": true,
+      "missing": {"bins": [], "anyBins": [], "env": [], "config": [], "os": []}
+    },
+    {
+      "name": "1password",
+      "description": "Use 1Password CLI.",
+      "emoji": "🔐",
+      "eligible": false,
+      "disabled": false,
+      "modelVisible": false,
+      "source": "openclaw-bundled",
+      "missing": {"bins": ["op"], "anyBins": [], "env": [], "config": [], "os": []}
+    },
+    {
+      "name": "disabled-skill",
+      "description": "Intentionally disabled.",
+      "eligible": false,
+      "disabled": true,
+      "missing": {"bins": [], "anyBins": [], "env": [], "config": [], "os": []}
+    }
+  ]
+}`
+
+const sampleSkillCheckFixture = `{
+  "agentId": "alpha",
+  "workspaceDir": "/srv/oc/workspace",
+  "managedSkillsDir": "/srv/oc/skills",
+  "summary": {
+    "total": 3,
+    "eligible": 1,
+    "modelVisible": 1,
+    "commandVisible": 1,
+    "disabled": 1,
+    "blocked": 0,
+    "missingRequirements": 1
+  },
+  "eligible": ["github"],
+  "disabled": ["disabled-skill"],
+  "missingRequirements": [
+    {
+      "name": "1password",
+      "missing": {"bins": ["op"]}
+    }
+  ]
+}`
+
+const sampleWorkshopListFixture = `{
+  "agentId": "alpha",
+  "mode": "auto",
+  "root": "/srv/oc/agents/alpha/agent/workshop-skills",
+  "skills": [
+    {
+      "name": "deploy-runbook",
+      "description": "Verify staging health before rolling deploy.",
+      "files": ["SKILL.md"],
+      "sizeBytes": 912,
+      "updatedAtMs": 1790602881820,
+      "useCount": 3
+    }
+  ],
+  "archived": []
+}`
+
+const sampleModelsStatusFixture = `{
+  "configPath": "/srv/oc/openclaw.json",
+  "agentDir": "/srv/oc/agents/alpha/agent",
+  "defaultModel": "ollama/llama3:8b",
+  "resolvedDefault": "ollama/llama3:8b",
+  "fallbacks": ["openrouter/auto"],
+  "allowed": ["ollama/llama3:8b", "openrouter/auto"],
+  "auth": {
+    "missingProvidersInUse": ["anthropic"],
+    "modelRouteIssues": ["ollama model missing"],
+    "providers": [
+      {
+        "provider": "ollama",
+        "effective": {"kind": "profiles", "detail": "local"}
+      }
+    ]
+  }
+}`
+
+func TestListAndCheckSkillsFixtures(t *testing.T) {
+	f := &fakeExec{res: hosts.Result{Stdout: sampleSkillListFixture}}
+	rep, err := NewClient(f).ListSkills(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("ListSkills: %v", err)
+	}
+	if !reflect.DeepEqual(f.args, []string{"skills", "list", "--agent", "alpha", "--json"}) {
+		t.Errorf("unexpected args: %v", f.args)
+	}
+	if len(rep.Skills) != 3 {
+		t.Fatalf("skills count: got %d, want 3", len(rep.Skills))
+	}
+	if got := len(rep.HealthySkills()); got != 1 || rep.HealthySkills()[0].Name != "github" {
+		t.Errorf("HealthySkills: %+v", rep.HealthySkills())
+	}
+	if got := len(rep.ProblemSkills()); got != 1 || rep.ProblemSkills()[0].Name != "1password" {
+		t.Errorf("ProblemSkills: %+v", rep.ProblemSkills())
+	}
+	if rep.RawOutput == "" {
+		t.Error("expected RawOutput to be preserved")
+	}
+
+	f.res = hosts.Result{Stdout: sampleSkillCheckFixture}
+	chk, err := NewClient(f).CheckSkills(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("CheckSkills: %v", err)
+	}
+	if chk.Summary.Total != 3 || chk.Summary.Eligible != 1 || chk.Summary.MissingRequirements != 1 {
+		t.Errorf("unexpected check summary: %+v", chk.Summary)
+	}
+	if len(chk.MissingRequirements) != 1 || chk.MissingRequirements[0].Missing.Summary() != "bins: op" {
+		t.Errorf("unexpected missing requirements: %+v", chk.MissingRequirements)
+	}
+}
+
+func TestUnsupportedVersionSurfacedClearly(t *testing.T) {
+	f := &fakeExec{res: hosts.Result{ExitCode: 1, Stderr: "error: unknown command 'workshop'"}}
+	_, err := NewClient(f).ListWorkshop(context.Background(), "alpha")
+	if !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("expected ErrUnsupported, got %v", err)
+	}
+}
+
+func TestWorkshopAndSelfReview(t *testing.T) {
+	f := &fakeExec{res: hosts.Result{Stdout: sampleWorkshopListFixture}}
+	ws, err := NewClient(f).ListWorkshop(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("ListWorkshop: %v", err)
+	}
+	if len(ws.Proposals) != 1 || ws.Proposals[0].Name != "deploy-runbook" {
+		t.Errorf("unexpected proposals: %+v", ws.Proposals)
+	}
+
+	f.res = hosts.Result{Stdout: `{"name":"deploy-runbook","filePath":"SKILL.md","content":"# Deploy Runbook\nStep 1"}`}
+	prop, err := NewClient(f).ShowWorkshopProposal(context.Background(), "alpha", "deploy-runbook")
+	if err != nil {
+		t.Fatalf("ShowWorkshopProposal: %v", err)
+	}
+	if prop.Content != "# Deploy Runbook\nStep 1" {
+		t.Errorf("unexpected proposal content: %q", prop.Content)
+	}
+
+	f.res = hosts.Result{Stdout: `{"reply":"Inspected 3 skills; proposed deploy-runbook improvement."}`}
+	sr, err := NewClient(f).SelfReview(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("SelfReview: %v", err)
+	}
+	if sr.Summary != "Inspected 3 skills; proposed deploy-runbook improvement." {
+		t.Errorf("unexpected review summary: %q", sr.Summary)
+	}
+}
+
+func TestParseModelsStatusFixture(t *testing.T) {
+	f := &fakeExec{res: hosts.Result{Stdout: sampleModelsStatusFixture}}
+	ms, err := NewClient(f).ModelsStatus(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("ModelsStatus: %v", err)
+	}
+	if ms.DefaultModel != "ollama/llama3:8b" || len(ms.MissingProvidersInUse) != 1 || len(ms.Providers) != 1 {
+		t.Errorf("unexpected model status: %+v", ms)
+	}
+}

@@ -6,6 +6,7 @@ package agents
 
 import (
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -117,4 +118,51 @@ func (i *Inventory) Total() int {
 		n += len(bees)
 	}
 	return n
+}
+
+// AllBees returns every discovered Bee in Hive order, then ID order.
+func (i *Inventory) AllBees() []Bee {
+	if i == nil {
+		return nil
+	}
+	var out []Bee
+	for _, h := range i.Hives {
+		out = append(out, i.ByHive[h]...)
+	}
+	return out
+}
+
+// FilterBees returns discovered Bees whose ID, display name, Hive, or runtime
+// contains query (case-insensitive). An empty query returns AllBees().
+func (i *Inventory) FilterBees(query string) []Bee {
+	all := i.AllBees()
+	q := strings.ToLower(strings.TrimSpace(query))
+	if q == "" {
+		return all
+	}
+	var out []Bee
+	for _, b := range all {
+		if strings.Contains(strings.ToLower(b.ID), q) ||
+			strings.Contains(strings.ToLower(b.DisplayName()), q) ||
+			strings.Contains(strings.ToLower(b.Hive), q) ||
+			strings.Contains(strings.ToLower(b.Runtime), q) {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// LastScanTime returns the most recent ScannedAt timestamp across all Hives,
+// or the zero Time if no Hive has been scanned.
+func (i *Inventory) LastScanTime() time.Time {
+	if i == nil {
+		return time.Time{}
+	}
+	var latest time.Time
+	for _, h := range i.Hives {
+		if t := i.Status[h].ScannedAt; t.After(latest) {
+			latest = t
+		}
+	}
+	return latest
 }

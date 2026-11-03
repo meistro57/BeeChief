@@ -21,10 +21,15 @@ cp configs/hosts.example.yaml ~/.config/beechief/hosts.yaml   # then edit
 go run ./cmd/beechief
 ```
 
-With no config file BeeChief still starts, with zero Hives. Set
-`BEECHIEF_CONFIG=/path/to/hosts.yaml` to use a different file.
+With no config file BeeChief still starts, with zero Hives, and you can add local or SSH Hives interactively from **Settings**. Set `BEECHIEF_CONFIG=/path/to/hosts.yaml` to use a different file.
 
-Keys: `↑/↓` (or `k/j`) move · `enter` select · `r` rescan all Hives · `q`/`esc` quit.
+To generate and export a portable, secret-redacted **Honey Report** from the CLI:
+
+```bash
+go run ./cmd/beechief diagnose --export --output honey-report.md
+```
+
+Keys: `↑/↓` (or `k/j`) move · `enter` select · `/` filter/search · `r` rescan all Hives · `esc` back/quit · `q` quit.
 
 ## Configuring Hives
 
@@ -81,6 +86,44 @@ shell. If it is installed in a user-local directory, add that directory to
 `PATH` in a file that non-interactive shells read (e.g. `~/.bashrc` above any
 interactive-only guard, or `~/.ssh/environment` where it is enabled).
 
+## Features & Workflows
+
+### Swarm Overview & Bee Detail (`#4`)
+- View total Hive count, total Bee count, per-Hive online/offline state, and last scan time.
+- Filter discovered Bees interactively with `/`.
+- Select any Bee (`enter`) to inspect its status, visible skills, skill check, self-review, Workshop proposals, curator/learning status, model status, or send a custom instruction.
+
+### Comb / Skills Inspection (`#5`)
+- Wraps `openclaw skills list --agent <id> --json` and `openclaw skills check --agent <id> --json`.
+- Highlights ready/loadable skills vs. broken or missing-requirement skills (`bins`, `anyBins`, `env`, `config`, `os`).
+- Surfaces unsupported OpenClaw CLI versions clearly and allows toggling raw CLI output (`v`) for troubleshooting.
+
+### Self-Review, Workshop Proposals & Swarm Review (`#6`, `#10`)
+- Runs a structured 7-point skill self-review on a selected Bee (`s`) and lists resulting Skill Workshop proposals (`w`) and proposal Markdown content (`enter`).
+- **Safety by default**: Workshop proposals are strictly read-only in BeeChief and are never silently auto-applied.
+- **Swarm Review**: Run self-review across the selected Bee (`1`), all Bees on the selected Hive (`2`), or all Bees across all reachable Hives (`3`) with bounded concurrency, live per-Bee state (`queued` / `running` / `complete` / `failed` / `skipped`), proposal count rollups, and safe cancellation (`x`) that preserves completed results.
+
+### Hive Health & Subsystem Troubleshooting (`#7`, `#8`)
+- **Hive Health (`Troubleshooting`)**: Runs 11 read-only checks (reachability, OpenClaw CLI version, Gateway health, agent discovery, disk free space, RAM, swap, model providers, Docker, systemd, and recent service failures) with severity sorting (`s`).
+- **Services (`Services`)**: Capability-detected inspection for **systemd** units (status, enabled state, recent logs, plus `S`/`T`/`R` start/stop/restart gated behind an explicit `[y/N]` confirmation prompt), **Docker** containers (state, ports, non-streaming CPU/RAM stats, recent logs), and **Models & Ollama** (detects mismatches between OpenClaw's configured models and reachable providers/local Ollama models).
+
+### Unified Log Browser (`#9`)
+- Browse bounded tails across `journalctl`, `docker`, `openclaw` Gateway logs, and `agent` status output on any Hive.
+- Filter by errors-only (`e`), warnings+errors (`w`), or text search (`/`).
+- Toggle non-blocking follow mode (`f`) and inspect the exact underlying CLI command (`c`). All remote output is stripped of ANSI/control sequences.
+
+### Honey Report Diagnostics (`#11`)
+- Export a portable Markdown diagnostic report from the TUI (`e` in Swarm Overview or Troubleshooting) or from the CLI:
+  ```bash
+  beechief diagnose --export --output honey-report.md
+  ```
+- Includes BeeChief & OpenClaw versions, Hive connectivity, Bee inventory, Comb & Workshop summaries, Hive Health checks, systemd/Docker/model states, recent warnings/errors, and a dedicated **Unavailable Checks** section.
+- Automatically scrubs secrets, bearer tokens, API keys (`sk-...`, `ghp_...`, `xoxb-...`, `AIza...`), passwords, URL credentials, and PEM private keys.
+
+### Interactive Hive Configuration Wizard (`#12`)
+- Open **Settings** to add a local Hive (`l`) or SSH Hive (`a`), edit an existing Hive (`e`/`enter`), or remove a Hive with confirmation (`d`).
+- Test SSH reachability and OpenClaw CLI presence (`t`) before saving, and automatically trigger a fleet rescan on save (`s`).
+
 ## Development
 
 ```bash
@@ -96,4 +139,12 @@ See [ROADMAP.md](ROADMAP.md) for the build plan and linked agent-ready GitHub is
 
 ## Status
 
-Early development. Implemented so far: the TUI skeleton (#1), Hive configuration with local/SSH execution (#2), and dynamic agent discovery (#3). The rest of the implementation queue is tracked in GitHub Issues.
+Implemented through v0.4:
+- TUI navigation, Swarm Overview, and Bee detail screens (#1, #4)
+- Hive configuration, interactive configuration wizard, and local/SSH execution (#2, #12)
+- Dynamic OpenClaw agent discovery (#3)
+- Comb skill inspection and per-Bee skill checks (#5)
+- Bee self-review, Workshop proposal inspection, and multi-Bee Swarm Review (#6, #10)
+- Hive Health quick diagnostics and systemd/Docker/Ollama/model troubleshooting (#7, #8)
+- Unified log browser with filtering and follow mode (#9)
+- Portable, secret-redacted Honey Report export via CLI and TUI (#11)

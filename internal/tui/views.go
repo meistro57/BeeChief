@@ -1,0 +1,1058 @@
+package tui
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/meistro57/beechief/internal/agents"
+	"github.com/meistro57/beechief/internal/config"
+	"github.com/meistro57/beechief/internal/diagnostics"
+	"github.com/meistro57/beechief/internal/logs"
+	"github.com/meistro57/beechief/internal/services"
+	"github.com/meistro57/beechief/internal/swarm"
+)
+
+func (m *Model) syncSelectionAfterScan() {
+	all := m.inventory.AllBees()
+	if m.selectedBee == nil && len(all) > 0 {
+		b := all[0]
+		m.selectedBee = &b
+	} else if m.selectedBee != nil {
+		for _, b := range all {
+			if b.Key() == m.selectedBee.Key() {
+				bCopy := b
+				m.selectedBee = &bCopy
+				break
+			}
+		}
+	}
+	if m.hiveIdx >= len(m.inventory.Hives) {
+		m.hiveIdx = 0
+	}
+}
+
+func (m Model) filteredBees() []agents.Bee {
+	return m.inventory.FilterBees(m.filterQuery)
+}
+
+func (m *Model) activeBee() *agents.Bee {
+	if m.selectedBee != nil {
+		return m.selectedBee
+	}
+	all := m.inventory.AllBees()
+	if len(all) > 0 {
+		b := all[0]
+		m.selectedBee = &b
+		return m.selectedBee
+	}
+	return nil
+}
+
+func (m *Model) cycleActiveBee(forward bool) {
+	all := m.inventory.AllBees()
+	if len(all) == 0 {
+		return
+	}
+	curIdx := 0
+	if m.selectedBee != nil {
+		for i, b := range all {
+			if b.Key() == m.selectedBee.Key() {
+				curIdx = i
+				break
+			}
+		}
+	}
+	if forward {
+		curIdx = (curIdx + 1) % len(all)
+	} else {
+		curIdx = (curIdx - 1 + len(all)) % len(all)
+	}
+	b := all[curIdx]
+	m.selectedBee = &b
+}
+
+func (m Model) activeHive() string {
+	if len(m.inventory.Hives) > 0 {
+		if m.hiveIdx >= 0 && m.hiveIdx < len(m.inventory.Hives) {
+			return m.inventory.Hives[m.hiveIdx]
+		}
+		return m.inventory.Hives[0]
+	}
+	if len(m.cfg.Hives) > 0 {
+		if m.hiveIdx >= 0 && m.hiveIdx < len(m.cfg.Hives) {
+			return m.cfg.Hives[m.hiveIdx].Name
+		}
+		return m.cfg.Hives[0].Name
+	}
+	return ""
+}
+
+func (m *Model) cycleActiveHive(forward bool) {
+	n := len(m.inventory.Hives)
+	if n == 0 {
+		n = len(m.cfg.Hives)
+	}
+	if n == 0 {
+		return
+	}
+	if forward {
+		m.hiveIdx = (m.hiveIdx + 1) % n
+	} else {
+		m.hiveIdx = (m.hiveIdx - 1 + n) % n
+	}
+}
+
+func (m Model) currentServicesCount() int {
+	if m.servicesReport == nil {
+		return 0
+	}
+	switch m.servicesTab {
+	case 0:
+		return len(m.servicesReport.Systemd.Units)
+	case 1:
+		return len(m.servicesReport.Docker.Containers)
+	case 2:
+		return len(m.servicesReport.Models.OllamaModels)
+	}
+	return 0
+}
+
+func (m *Model) loadSkillsCmd() tea.Cmd {
+	bee := m.activeBee()
+	if m.ops == nil || bee == nil {
+		return nil
+	}
+	m.busy = true
+	ops := m.ops
+	target := *bee
+	return func() tea.Msg {
+		rep, err := ops.ListSkills(context.Background(), target)
+		return skillListMsg{rep: rep, err: err}
+	}
+}
+
+func (m *Model) checkSkillsCmd() tea.Cmd {
+	bee := m.activeBee()
+	if m.ops == nil || bee == nil {
+		return nil
+	}
+	m.busy = true
+	ops := m.ops
+	target := *bee
+	return func() tea.Msg {
+		rep, err := ops.CheckSkills(context.Background(), target)
+		return skillCheckMsg{rep: rep, err: err}
+	}
+}
+
+func (m *Model) selfReviewCmd() tea.Cmd {
+	bee := m.activeBee()
+	if m.ops == nil || bee == nil {
+		return nil
+	}
+	m.busy = true
+	ops := m.ops
+	target := *bee
+	return func() tea.Msg {
+		rep, err := ops.SelfReview(context.Background(), target)
+		return selfReviewMsg{rep: rep, err: err}
+	}
+}
+
+func (m *Model) loadWorkshopCmd() tea.Cmd {
+	bee := m.activeBee()
+	if m.ops == nil || bee == nil {
+		return nil
+	}
+	m.busy = true
+	ops := m.ops
+	target := *bee
+	return func() tea.Msg {
+		rep, err := ops.ListWorkshop(context.Background(), target)
+		return workshopListMsg{rep: rep, err: err}
+	}
+}
+
+func (m *Model) showProposalCmd(name string) tea.Cmd {
+	bee := m.activeBee()
+	if m.ops == nil || bee == nil {
+		return nil
+	}
+	m.busy = true
+	ops := m.ops
+	target := *bee
+	return func() tea.Msg {
+		prop, err := ops.ShowWorkshopProposal(context.Background(), target, name)
+		return workshopShowMsg{prop: prop, err: err}
+	}
+}
+
+func (m *Model) loadModelStatusCmd() tea.Cmd {
+	bee := m.activeBee()
+	if m.ops == nil || bee == nil {
+		return nil
+	}
+	m.busy = true
+	ops := m.ops
+	target := *bee
+	return func() tea.Msg {
+		rep, err := ops.ModelsStatus(context.Background(), target)
+		return modelStatusMsg{rep: rep, err: err}
+	}
+}
+
+func (m *Model) runHiveHealthCmd() tea.Cmd {
+	hive := m.activeHive()
+	if m.ops == nil || hive == "" {
+		return nil
+	}
+	m.busy = true
+	ops := m.ops
+	return func() tea.Msg {
+		rep, err := ops.RunHiveHealth(context.Background(), hive)
+		return hiveHealthMsg{rep: rep, err: err}
+	}
+}
+
+func (m *Model) inspectServicesCmd() tea.Cmd {
+	hive := m.activeHive()
+	if m.ops == nil || hive == "" {
+		return nil
+	}
+	m.busy = true
+	ops := m.ops
+	return func() tea.Msg {
+		rep, err := ops.InspectServices(context.Background(), hive)
+		return servicesMsg{rep: rep, err: err}
+	}
+}
+
+func (m *Model) inspectUnitCmd(unit string) tea.Cmd {
+	hive := m.activeHive()
+	if m.ops == nil || hive == "" {
+		return nil
+	}
+	m.busy = true
+	ops := m.ops
+	return func() tea.Msg {
+		u, err := ops.InspectSystemdUnit(context.Background(), hive, unit)
+		return unitDetailMsg{unit: u, err: err}
+	}
+}
+
+func (m *Model) controlServiceCmd(unit string, action services.ServiceAction, confirmed bool) tea.Cmd {
+	hive := m.activeHive()
+	if m.ops == nil || hive == "" {
+		return nil
+	}
+	m.busy = true
+	ops := m.ops
+	return func() tea.Msg {
+		err := ops.ControlSystemdService(context.Background(), hive, unit, action, confirmed)
+		return serviceControlMsg{unit: unit, action: action, err: err}
+	}
+}
+
+func (m *Model) fetchDockerLogsCmd(container string) tea.Cmd {
+	hive := m.activeHive()
+	if m.ops == nil || hive == "" {
+		return nil
+	}
+	m.busy = true
+	ops := m.ops
+	return func() tea.Msg {
+		out, err := ops.FetchDockerLogs(context.Background(), hive, container, 40)
+		return dockerLogsMsg{container: container, logs: out, err: err}
+	}
+}
+
+func (m *Model) fetchLogsCmd() tea.Cmd {
+	hive := m.activeHive()
+	if m.ops == nil || hive == "" {
+		return nil
+	}
+	m.busy = true
+	ops := m.ops
+	kind := logs.AllSources[m.logSourceIdx]
+	target := m.logTarget
+	return func() tea.Msg {
+		res, err := ops.FetchLogs(context.Background(), hive, kind, target, logs.DefaultTail)
+		return logsResultMsg{res: res, err: err}
+	}
+}
+
+func (m *Model) exportHoneyReportCmd() tea.Cmd {
+	if m.ops == nil {
+		return nil
+	}
+	m.busy = true
+	ops := m.ops
+	inv := m.inventory.Clone()
+	return func() tea.Msg {
+		path, err := ops.ExportHoneyReport(context.Background(), inv, "")
+		return honeyExportMsg{path: path, err: err}
+	}
+}
+
+func (m *Model) testHiveCmd(h config.Hive) tea.Cmd {
+	if m.ops == nil {
+		return nil
+	}
+	m.busy = true
+	ops := m.ops
+	return func() tea.Msg {
+		return hiveTestMsg{res: ops.TestHive(context.Background(), h)}
+	}
+}
+
+func (m Model) startSwarmReview(mode swarm.Mode) (tea.Model, tea.Cmd) {
+	bees := swarm.SelectBees(m.inventory, mode, m.activeBee(), m.activeHive())
+	if len(bees) == 0 {
+		m.statusBanner = "No Bees available for Swarm Review in mode " + string(mode)
+		return m, nil
+	}
+	if m.ops == nil {
+		coord := swarm.NewCoordinator(mode, bees, nil, swarm.DefaultConcurrency, nil)
+		snap := coord.Snapshot()
+		m.swarmCoord = coord
+		m.swarmSnap = &snap
+		return m, nil
+	}
+	coord := m.ops.StartSwarmReview(mode, bees, nil)
+	snap := coord.Snapshot()
+	m.swarmCoord = coord
+	m.swarmSnap = &snap
+	m.busy = true
+	m.statusBanner = fmt.Sprintf("Running Swarm Review (%s) across %d Bee(s)…", mode, len(bees))
+	return m, func() tea.Msg {
+		final := coord.Run(context.Background())
+		return swarmProgressMsg{snap: final}
+	}
+}
+
+// View implements tea.Model.
+func (m Model) View() string {
+	if m.quitting {
+		return ""
+	}
+	switch m.screen {
+	case screenSwarmOverview:
+		return m.viewSwarmOverview()
+	case screenBees:
+		return m.viewBees()
+	case screenBeeDetail:
+		return m.viewBeeDetail()
+	case screenComb:
+		return m.viewComb()
+	case screenSelfReview:
+		return m.viewSelfReview()
+	case screenTroubleshooting:
+		return m.viewTroubleshooting()
+	case screenServices:
+		return m.viewServices()
+	case screenLogs:
+		return m.viewLogs()
+	case screenSettings:
+		return m.viewSettings()
+	default:
+		return m.viewRoot()
+	}
+}
+
+func (m Model) viewRoot() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("BeeChief 🐝"))
+	b.WriteString("\n")
+	b.WriteString(fmt.Sprintf("Bees discovered: %d\n", m.inventory.Total()))
+	b.WriteString(m.hiveSummary())
+	b.WriteString("\n")
+
+	for i, s := range m.sections {
+		if i == m.cursor {
+			b.WriteString(cursorStyle.Render("> " + s.Title))
+		} else {
+			b.WriteString(plainStyle.Render("  " + s.Title))
+		}
+		b.WriteString("\n")
+	}
+
+	if m.statusBanner != "" {
+		b.WriteString("\n")
+		b.WriteString(warnStyle.Render(m.statusBanner))
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("↑/↓ move · enter select · r rescan · q quit"))
+	return b.String()
+}
+
+// hiveSummary renders one line per Hive, marking failed Hives visibly.
+func (m Model) hiveSummary() string {
+	var b strings.Builder
+	if m.scanning {
+		b.WriteString(helpStyle.Render("Scanning hives…"))
+		b.WriteString("\n")
+	}
+	for _, h := range m.inventory.Hives {
+		st := m.inventory.Status[h]
+		if st.OK() {
+			b.WriteString(okStyle.Render(fmt.Sprintf("  ✓ %s: %d bees", h, len(m.inventory.ByHive[h]))))
+		} else {
+			b.WriteString(failStyle.Render(fmt.Sprintf("  ✗ %s: %v", h, st.Err)))
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func (m Model) viewSwarmOverview() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("BeeChief 🐝 — Swarm Overview"))
+	b.WriteString("\n")
+
+	lastScan := "never"
+	if t := m.inventory.LastScanTime(); !t.IsZero() {
+		lastScan = t.Format("15:04:05")
+	}
+	scanState := "idle"
+	if m.scanning {
+		scanState = "scanning…"
+	}
+	fmt.Fprintf(&b, "Total Hives: %d · Total Bees: %d · Last scan: %s (%s)\n\n",
+		len(m.inventory.Hives), m.inventory.Total(), lastScan, scanState)
+
+	b.WriteString(headerStyle.Render("Hives"))
+	b.WriteString("\n")
+	if len(m.inventory.Hives) == 0 {
+		b.WriteString("  (no Hives configured — open Settings to add one)\n")
+	}
+	for _, h := range m.inventory.Hives {
+		st := m.inventory.Status[h]
+		if st.OK() {
+			b.WriteString(okStyle.Render(fmt.Sprintf("  ✓ %s [online] — %d bee(s)", h, len(m.inventory.ByHive[h]))))
+		} else {
+			b.WriteString(failStyle.Render(fmt.Sprintf("  ✗ %s [offline] — %v", h, st.Err)))
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+
+	m.renderBeeList(&b)
+	m.renderBannerAndInput(&b)
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("↑/↓ move · enter Bee details · / filter · e export Honey Report · r rescan · esc back · q quit"))
+	return b.String()
+}
+
+func (m Model) viewBees() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("BeeChief 🐝 — Discovered Bees"))
+	b.WriteString("\n\n")
+	m.renderBeeList(&b)
+	m.renderBannerAndInput(&b)
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("↑/↓ move · enter Bee details · / filter · r rescan · esc back · q quit"))
+	return b.String()
+}
+
+func (m Model) renderBeeList(b *strings.Builder) {
+	header := "Discovered Bees"
+	if m.filterQuery != "" {
+		header += fmt.Sprintf(" (filter: %q)", m.filterQuery)
+	}
+	b.WriteString(headerStyle.Render(header))
+	b.WriteString("\n")
+
+	bees := m.filteredBees()
+	if len(bees) == 0 {
+		b.WriteString("  (no matching Bees discovered)\n")
+		return
+	}
+	for i, bee := range bees {
+		emoji := bee.Emoji
+		if emoji == "" {
+			emoji = "🐝"
+		}
+		model := firstOr(bee.Runtime, "default-model")
+		defTag := ""
+		if bee.Default {
+			defTag = " [default]"
+		}
+		line := fmt.Sprintf("%s %s (%s) — Hive: %s · Model: %s%s",
+			emoji, bee.DisplayName(), bee.ID, bee.Hive, model, defTag)
+		if i == m.beeCursor {
+			b.WriteString(cursorStyle.Render("> " + line))
+		} else {
+			b.WriteString(plainStyle.Render("  " + line))
+		}
+		b.WriteString("\n")
+	}
+}
+
+func (m Model) viewBeeDetail() string {
+	var b strings.Builder
+	bee := m.activeBee()
+	if bee == nil {
+		b.WriteString(titleStyle.Render("BeeChief 🐝 — Bee Detail"))
+		b.WriteString("\n\nNo Bee selected.\n\n")
+		b.WriteString(helpStyle.Render("esc back"))
+		return b.String()
+	}
+
+	emoji := firstOr(bee.Emoji, "🐝")
+	b.WriteString(titleStyle.Render(fmt.Sprintf("BeeChief 🐝 — %s %s (%s)", emoji, bee.DisplayName(), bee.Key())))
+	b.WriteString("\n")
+	st := m.inventory.Status[bee.Hive]
+	hiveState := "online"
+	if !st.OK() {
+		hiveState = fmt.Sprintf("offline: %v", st.Err)
+	}
+	fmt.Fprintf(&b, "Hive: %s (%s) · ID: %s · Default: %v\n", bee.Hive, hiveState, bee.ID, bee.Default)
+	fmt.Fprintf(&b, "Model: %s · Workspace: %s\n", firstOr(bee.Runtime, "unspecified"), firstOr(bee.Workspace, "unspecified"))
+	if bee.AgentDir != "" {
+		fmt.Fprintf(&b, "AgentDir: %s\n", bee.AgentDir)
+	}
+	b.WriteString("\n")
+	b.WriteString(headerStyle.Render("Actions"))
+	b.WriteString("\n")
+	for i, act := range BeeDetailActions {
+		if i == m.detailCursor {
+			b.WriteString(cursorStyle.Render("> " + act))
+		} else {
+			b.WriteString(plainStyle.Render("  " + act))
+		}
+		b.WriteString("\n")
+	}
+
+	if m.detailOutput != "" {
+		b.WriteString("\n")
+		b.WriteString(headerStyle.Render("Output"))
+		b.WriteString("\n")
+		b.WriteString(m.detailOutput)
+		b.WriteString("\n")
+	}
+	m.renderBannerAndInput(&b)
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("↑/↓ move · enter run action · r rescan · esc back"))
+	return b.String()
+}
+
+func (m Model) viewComb() string {
+	var b strings.Builder
+	bee := m.activeBee()
+	beeLabel := "none"
+	if bee != nil {
+		beeLabel = fmt.Sprintf("%s (%s)", bee.DisplayName(), bee.Key())
+	}
+	b.WriteString(titleStyle.Render("BeeChief 🐝 — Comb / Skills Inspection"))
+	b.WriteString("\n")
+	fmt.Fprintf(&b, "Selected Bee: %s\n\n", beeLabel)
+
+	if m.skillCheck != nil {
+		s := m.skillCheck.Summary
+		fmt.Fprintf(&b, "Skill Check Summary: %d total · %s · %s · %d disabled\n\n",
+			s.Total,
+			okStyle.Render(fmt.Sprintf("%d loadable/healthy", s.Eligible)),
+			warnStyle.Render(fmt.Sprintf("%d missing requirements", s.MissingRequirements)),
+			s.Disabled,
+		)
+	}
+
+	if m.skillList == nil {
+		b.WriteString("No skill list loaded yet. Press 'l' to list skills or 'c' to run skill check.\n")
+	} else {
+		healthy := m.skillList.HealthySkills()
+		problems := m.skillList.ProblemSkills()
+		fmt.Fprintf(&b, "Discovered: %d · Loadable/Healthy: %d · Broken/Problem: %d\n\n",
+			len(m.skillList.Skills), len(healthy), len(problems))
+
+		for i, sk := range m.skillList.Skills {
+			badge := okStyle.Render("[ready]")
+			if sk.Broken() {
+				badge = failStyle.Render("[" + sk.StateLabel() + "]")
+			} else if sk.Disabled {
+				badge = helpStyle.Render("[disabled]")
+			}
+			line := fmt.Sprintf("%s %s — %s", sk.Name, badge, sk.Description)
+			if i == m.skillCursor {
+				b.WriteString(cursorStyle.Render("> ") + line)
+			} else {
+				b.WriteString("  " + line)
+			}
+			b.WriteString("\n")
+		}
+
+		if m.skillCursor >= 0 && m.skillCursor < len(m.skillList.Skills) {
+			sel := m.skillList.Skills[m.skillCursor]
+			b.WriteString("\n")
+			b.WriteString(headerStyle.Render("Selected Skill Diagnostics: " + sel.Name))
+			b.WriteString("\n")
+			fmt.Fprintf(&b, "  Source: %s · Eligible: %v · ModelVisible: %v · CommandVisible: %v\n",
+				firstOr(sel.Source, "unknown"), sel.Eligible, sel.ModelVisible, sel.CommandVisible)
+			if sel.Missing.HasMissing() {
+				fmt.Fprintf(&b, "  Missing Requirements: %s\n", sel.Missing.Summary())
+			}
+		}
+
+		if m.showRawComb {
+			b.WriteString("\n")
+			b.WriteString(headerStyle.Render("Raw OpenClaw Output"))
+			b.WriteString("\n")
+			raw := m.skillList.RawOutput
+			if m.skillCheck != nil && m.skillCheck.RawOutput != "" {
+				raw = m.skillCheck.RawOutput
+			}
+			b.WriteString(truncateText(raw, 800))
+			b.WriteString("\n")
+		}
+	}
+
+	m.renderBannerAndInput(&b)
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("↑/↓ select skill · [ / ] switch Bee · l list skills · c skill check · v raw output · esc back"))
+	return b.String()
+}
+
+func (m Model) viewSelfReview() string {
+	var b strings.Builder
+	bee := m.activeBee()
+	beeLabel := "none"
+	if bee != nil {
+		beeLabel = fmt.Sprintf("%s (%s)", bee.DisplayName(), bee.Key())
+	}
+	b.WriteString(titleStyle.Render("BeeChief 🐝 — Self Review, Workshop & Swarm Review"))
+	b.WriteString("\n")
+	fmt.Fprintf(&b, "Selected Bee: %s (Safety: Workshop proposals are read-only and never auto-applied)\n\n", beeLabel)
+
+	if m.activeProposal != nil {
+		b.WriteString(headerStyle.Render("Workshop Proposal: " + m.activeProposal.Name))
+		b.WriteString("\n")
+		b.WriteString(m.activeProposal.Content)
+		b.WriteString("\n\n")
+		b.WriteString(helpStyle.Render("esc close proposal detail"))
+		return b.String()
+	}
+
+	if m.selfReview != nil {
+		b.WriteString(headerStyle.Render("Latest Bee Self-Review (" + m.selfReview.AgentID + ")"))
+		b.WriteString("\n")
+		b.WriteString(truncateText(m.selfReview.Summary, 600))
+		b.WriteString("\n\n")
+	}
+
+	b.WriteString(headerStyle.Render("Workshop Proposals"))
+	b.WriteString("\n")
+	if m.workshopList == nil || len(m.workshopList.Proposals) == 0 {
+		b.WriteString("  (no Workshop proposals loaded — press 'w' to refresh or 's' to run self-review)\n")
+	} else {
+		for i, p := range m.workshopList.Proposals {
+			line := fmt.Sprintf("%s — %s (uses=%d)", p.Name, p.Description, p.UseCount)
+			if i == m.proposalCursor {
+				b.WriteString(cursorStyle.Render("> " + line))
+			} else {
+				b.WriteString("  " + line)
+			}
+			b.WriteString("\n")
+		}
+	}
+
+	if m.swarmSnap != nil {
+		b.WriteString("\n")
+		sum := m.swarmSnap.Summary
+		b.WriteString(headerStyle.Render(fmt.Sprintf(
+			"Swarm Review (%s) — total=%d complete=%d failed=%d skipped=%d proposals=%d",
+			m.swarmSnap.Mode, sum.Total, sum.Completed, sum.Failed, sum.Skipped, sum.TotalProposals)))
+		b.WriteString("\n")
+		for _, it := range m.swarmSnap.Items {
+			fmt.Fprintf(&b, "  [%s] %s: proposals=%d", it.State, it.Bee.Key(), it.ProposalCount)
+			if it.Err != "" {
+				fmt.Fprintf(&b, " err=%s", it.Err)
+			} else if it.Output != "" {
+				fmt.Fprintf(&b, " — %s", firstLine(it.Output))
+			}
+			b.WriteString("\n")
+		}
+	}
+
+	m.renderBannerAndInput(&b)
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("s self-review Bee · w Workshop list · enter inspect proposal · 1/2/3 Swarm Review (Bee/Hive/All) · x cancel Swarm · [ / ] switch Bee · esc back"))
+	return b.String()
+}
+
+func (m Model) viewTroubleshooting() string {
+	var b strings.Builder
+	hive := firstOr(m.activeHive(), "none")
+	b.WriteString(titleStyle.Render("BeeChief 🐝 — Hive Health & Honey Report"))
+	b.WriteString("\n")
+	fmt.Fprintf(&b, "Selected Hive: %s · Sort by severity: %v\n\n", hive, m.sortSeverity)
+
+	if m.healthReport == nil {
+		b.WriteString("No Hive Health report yet. Press 'h' to run quick diagnostics or 'e' to export a Honey Report.\n")
+	} else {
+		pass, warn, fail, unavail := m.healthReport.Counts()
+		fmt.Fprintf(&b, "Summary: %s · %s · %s · %d unavailable\n\n",
+			okStyle.Render(fmt.Sprintf("%d pass", pass)),
+			warnStyle.Render(fmt.Sprintf("%d warning", warn)),
+			failStyle.Render(fmt.Sprintf("%d fail", fail)),
+			unavail,
+		)
+		checks := m.healthReport.Checks
+		if m.sortSeverity {
+			checks = m.healthReport.SortedBySeverity()
+		}
+		for i, c := range checks {
+			var badge string
+			switch c.State {
+			case diagnostics.StatePass:
+				badge = okStyle.Render("[PASS]")
+			case diagnostics.StateWarning:
+				badge = warnStyle.Render("[WARN]")
+			case diagnostics.StateFail:
+				badge = failStyle.Render("[FAIL]")
+			default:
+				badge = helpStyle.Render("[UNAVAIL]")
+			}
+			line := fmt.Sprintf("%s %s — %s", badge, c.Name, c.Summary)
+			if i == m.healthCursor {
+				b.WriteString(cursorStyle.Render("> ") + line)
+			} else {
+				b.WriteString("  " + line)
+			}
+			b.WriteString("\n")
+		}
+		if m.healthCursor >= 0 && m.healthCursor < len(checks) {
+			sel := checks[m.healthCursor]
+			if sel.Detail != "" || len(sel.Remediation) > 0 {
+				b.WriteString("\n")
+				b.WriteString(headerStyle.Render("Check Details: " + sel.Name))
+				b.WriteString("\n")
+				if sel.Detail != "" {
+					fmt.Fprintf(&b, "  Detail: %s\n", sel.Detail)
+				}
+				for _, rem := range sel.Remediation {
+					fmt.Fprintf(&b, "  Remediation: • %s\n", rem)
+				}
+			}
+		}
+	}
+
+	if m.exportPath != "" {
+		b.WriteString("\n")
+		b.WriteString(okStyle.Render("Honey Report exported: " + m.exportPath))
+		b.WriteString("\n")
+	}
+
+	m.renderBannerAndInput(&b)
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("↑/↓ select check · [ / ] switch Hive · h run Hive Health · s sort severity · e export Honey Report · esc back"))
+	return b.String()
+}
+
+func (m Model) viewServices() string {
+	var b strings.Builder
+	hive := firstOr(m.activeHive(), "none")
+	tabs := []string{"systemd", "Docker", "Models & Ollama"}
+	var tabHeader []string
+	for i, t := range tabs {
+		if i == m.servicesTab {
+			tabHeader = append(tabHeader, cursorStyle.Render("["+t+"]"))
+		} else {
+			tabHeader = append(tabHeader, " "+t+" ")
+		}
+	}
+	b.WriteString(titleStyle.Render("BeeChief 🐝 — Services & Model Troubleshooting"))
+	b.WriteString("\n")
+	fmt.Fprintf(&b, "Hive: %s · Subsystem: %s\n\n", hive, strings.Join(tabHeader, " · "))
+
+	if m.pendingAction != "" {
+		b.WriteString(warnStyle.Render(fmt.Sprintf(
+			"CONFIRMATION REQUIRED: Run `systemctl %s %s` on Hive %s? [y/N]",
+			m.pendingAction, m.pendingUnit, hive)))
+		b.WriteString("\n\n")
+	}
+
+	if m.servicesReport == nil {
+		b.WriteString("No service data loaded. Press 'r' or switch Hive with '[' / ']'.\n")
+	} else {
+		switch m.servicesTab {
+		case 0:
+			sd := m.servicesReport.Systemd
+			if !sd.Available {
+				b.WriteString(warnStyle.Render("systemd unavailable on this Hive: " + firstOr(sd.Err, "not detected")))
+				b.WriteString("\n")
+			} else {
+				fmt.Fprintf(&b, "systemd system state: %s\n\n", sd.SystemState)
+				for i, u := range sd.Units {
+					line := fmt.Sprintf("%s [%s/%s] — %s", u.Name, u.ActiveState, u.SubState, u.Description)
+					if i == m.serviceCursor {
+						b.WriteString(cursorStyle.Render("> " + line))
+					} else {
+						b.WriteString("  " + line)
+					}
+					b.WriteString("\n")
+				}
+				if m.selectedUnit != nil {
+					b.WriteString("\n")
+					b.WriteString(headerStyle.Render("Unit Inspection: " + m.selectedUnit.Name + " (enabled=" + firstOr(m.selectedUnit.EnabledState, "unknown") + ")"))
+					b.WriteString("\n")
+					if m.selectedUnit.Details != "" {
+						b.WriteString(truncateText(m.selectedUnit.Details, 400) + "\n")
+					}
+					if m.selectedUnit.RecentLogs != "" {
+						b.WriteString("Recent Logs:\n" + truncateText(m.selectedUnit.RecentLogs, 400) + "\n")
+					}
+				}
+			}
+		case 1:
+			dk := m.servicesReport.Docker
+			if !dk.Available {
+				b.WriteString(warnStyle.Render("Docker unavailable on this Hive: " + firstOr(dk.Err, "not detected")))
+				b.WriteString("\n")
+			} else if len(dk.Containers) == 0 {
+				fmt.Fprintf(&b, "Docker %s available (0 containers)\n", dk.Version)
+			} else {
+				fmt.Fprintf(&b, "Docker %s — %d container(s):\n\n", dk.Version, len(dk.Containers))
+				for i, c := range dk.Containers {
+					line := fmt.Sprintf("%s (%s) [%s: %s] ports=%s cpu=%s mem=%s",
+						c.Name, c.Image, c.State, c.Status, firstOr(c.Ports, "-"), firstOr(c.CPU, "-"), firstOr(c.Mem, "-"))
+					if i == m.serviceCursor {
+						b.WriteString(cursorStyle.Render("> " + line))
+					} else {
+						b.WriteString("  " + line)
+					}
+					b.WriteString("\n")
+				}
+				if m.dockerLogText != "" {
+					b.WriteString("\n")
+					b.WriteString(headerStyle.Render("Container Recent Logs"))
+					b.WriteString("\n")
+					b.WriteString(truncateText(m.dockerLogText, 500) + "\n")
+				}
+			}
+		case 2:
+			md := m.servicesReport.Models
+			fmt.Fprintf(&b, "Configured Default Model: %s\n", firstOr(md.ConfiguredDefault, "none"))
+			fmt.Fprintf(&b, "Ollama Installed: %v · Ollama Reachable: %v\n", md.OllamaAvailable, md.OllamaReachable)
+			if len(md.Mismatches) > 0 {
+				b.WriteString("\n")
+				b.WriteString(failStyle.Render("Detected Model / Provider Mismatches:"))
+				b.WriteString("\n")
+				for _, mm := range md.Mismatches {
+					b.WriteString(failStyle.Render("  • " + mm))
+					b.WriteString("\n")
+				}
+			}
+			b.WriteString("\n")
+			b.WriteString(headerStyle.Render("Local Ollama Models"))
+			b.WriteString("\n")
+			if len(md.OllamaModels) == 0 {
+				b.WriteString("  (none)\n")
+			}
+			for _, om := range md.OllamaModels {
+				fmt.Fprintf(&b, "  • %s (%s, %s)\n", om.Name, om.Size, om.Modified)
+			}
+		}
+	}
+
+	m.renderBannerAndInput(&b)
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("tab switch subsystem · [ / ] switch Hive · ↑/↓ select · enter inspect/logs · S/T/R start/stop/restart unit (confirm) · esc back"))
+	return b.String()
+}
+
+func (m Model) viewLogs() string {
+	var b strings.Builder
+	hive := firstOr(m.activeHive(), "none")
+	kind := logs.AllSources[m.logSourceIdx]
+	cmdStr := logs.CommandString(kind, m.logTarget, logs.DefaultTail)
+
+	b.WriteString(titleStyle.Render("BeeChief 🐝 — Unified Log Browser"))
+	b.WriteString("\n")
+	fmt.Fprintf(&b, "Hive: %s · Source: %s · Target: %s · Follow: %v\n",
+		hive, kind, firstOr(m.logTarget, "(all)"), m.logFollowing)
+	fmt.Fprintf(&b, "Filters: errorsOnly=%v warningsOnly=%v search=%q\n",
+		m.logFilter.ErrorsOnly, m.logFilter.WarningsOnly, m.logFilter.Search)
+	if m.showLogCmd {
+		b.WriteString(headerStyle.Render("Command: " + cmdStr))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+
+	if m.logResult == nil {
+		b.WriteString("No logs loaded. Press 't' to set unit/container/agent target or 'tab' to switch source.\n")
+	} else {
+		filtered := m.logFilter.Apply(m.logResult.Entries)
+		if len(filtered) == 0 {
+			b.WriteString("  (0 lines match current filter)\n")
+		} else {
+			start := m.logScroll
+			if start >= len(filtered) {
+				start = len(filtered) - 1
+			}
+			if start < 0 {
+				start = 0
+			}
+			end := start + 18
+			if end > len(filtered) {
+				end = len(filtered)
+			}
+			for _, e := range filtered[start:end] {
+				switch e.Level {
+				case logs.LevelError:
+					b.WriteString(failStyle.Render("  " + e.Line))
+				case logs.LevelWarning:
+					b.WriteString(warnStyle.Render("  " + e.Line))
+				default:
+					b.WriteString("  " + e.Line)
+				}
+				b.WriteString("\n")
+			}
+		}
+	}
+
+	m.renderBannerAndInput(&b)
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("tab source · [ / ] Hive · t target · e errors · w warnings · / search · f follow · c show cmd · esc back"))
+	return b.String()
+}
+
+func (m Model) viewSettings() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("BeeChief 🐝 — Hive Configuration Wizard"))
+	b.WriteString("\n")
+	cfgPath := "hosts.yaml"
+	if m.ops != nil && m.ops.ConfigPath() != "" {
+		cfgPath = m.ops.ConfigPath()
+	}
+	fmt.Fprintf(&b, "Config file: %s (SSH keys/config reused; passwords are never stored)\n\n", cfgPath)
+
+	if m.confirmDel != "" {
+		b.WriteString(warnStyle.Render(fmt.Sprintf("CONFIRMATION REQUIRED: Remove Hive %q from configuration? [y/N]", m.confirmDel)))
+		b.WriteString("\n\n")
+	}
+
+	if m.wizard.active {
+		title := "Add Hive"
+		if m.wizard.editing != "" {
+			title = "Edit Hive: " + m.wizard.editing
+		}
+		b.WriteString(headerStyle.Render(title))
+		b.WriteString("\n")
+		for i, label := range wizardFieldLabels {
+			val := m.wizard.fields[i]
+			if val == "" {
+				val = "<empty>"
+			}
+			line := fmt.Sprintf("%s: %s", label, val)
+			if i == m.wizard.fieldIdx {
+				b.WriteString(cursorStyle.Render("> " + line))
+			} else {
+				b.WriteString("  " + line)
+			}
+			b.WriteString("\n")
+		}
+		m.renderBannerAndInput(&b)
+		b.WriteString("\n")
+		b.WriteString(helpStyle.Render("↑/↓ select field · enter edit value · t test connection & OpenClaw · s save & rescan · esc cancel"))
+		return b.String()
+	}
+
+	b.WriteString(headerStyle.Render("Configured Hives"))
+	b.WriteString("\n")
+	if len(m.cfg.Hives) == 0 {
+		b.WriteString("  (0 Hives configured — press 'l' to add local Hive or 'a' to add SSH Hive)\n")
+	}
+	for i, h := range m.cfg.Hives {
+		desc := fmt.Sprintf("%s [%s]", h.Name, h.Kind())
+		if h.Kind() == config.TypeSSH {
+			desc += fmt.Sprintf(" host=%s", h.Host)
+			if h.User != "" {
+				desc += fmt.Sprintf(" user=%s", h.User)
+			}
+			if h.Port > 0 {
+				desc += fmt.Sprintf(" port=%d", h.Port)
+			}
+		}
+		if h.Label != "" {
+			desc += fmt.Sprintf(" (%s)", h.Label)
+		}
+		if i == m.settingsIdx {
+			b.WriteString(cursorStyle.Render("> " + desc))
+		} else {
+			b.WriteString("  " + desc)
+		}
+		b.WriteString("\n")
+	}
+
+	if m.lastHiveTest != nil {
+		b.WriteString("\n")
+		t := m.lastHiveTest
+		b.WriteString(headerStyle.Render(fmt.Sprintf(
+			"Last Connection Test (%s): reachable=%v openclaw=%v (%s)",
+			t.Hive, t.Reachable, t.OpenClawPresent, firstOr(t.OpenClawVersion, t.Err))))
+		b.WriteString("\n")
+	}
+
+	m.renderBannerAndInput(&b)
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("a add SSH Hive · l add local Hive · e/enter edit · d delete (confirm) · t test Hive · r rescan · esc back"))
+	return b.String()
+}
+
+func (m Model) renderBannerAndInput(b *strings.Builder) {
+	if m.busy {
+		b.WriteString("\n")
+		b.WriteString(helpStyle.Render("Working…"))
+		b.WriteString("\n")
+	}
+	if m.statusBanner != "" {
+		b.WriteString("\n")
+		b.WriteString(warnStyle.Render(m.statusBanner))
+		b.WriteString("\n")
+	}
+	if m.input != inputNone {
+		b.WriteString("\n")
+		var prompt string
+		switch m.input {
+		case inputFilterBees:
+			prompt = "Filter Bees: "
+		case inputInstruction:
+			prompt = "Custom instruction: "
+		case inputLogSearch:
+			prompt = "Search logs: "
+		case inputLogTarget:
+			prompt = "Log target (unit/container/agent): "
+		case inputWizardField:
+			prompt = wizardFieldLabels[m.wizard.fieldIdx] + ": "
+		}
+		b.WriteString(cursorStyle.Render(prompt + m.inputBuffer + "█"))
+		b.WriteString("\n")
+	}
+}
+
+func truncateText(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "\n…(truncated)"
+}
+
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+func firstOr(s, fallback string) string {
+	if strings.TrimSpace(s) != "" {
+		return s
+	}
+	return fallback
+}

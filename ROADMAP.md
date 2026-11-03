@@ -26,10 +26,10 @@ The design rule is simple:
 
 Goal: launch BeeChief, connect to one or more machines, discover agents automatically, and navigate the fleet.
 
-- [ ] #1 Bootstrap BeeChief Go TUI with Bubble Tea
-- [ ] #2 Add Hive host configuration and local/SSH execution layer
-- [ ] #3 Discover OpenClaw agents dynamically on every Hive
-- [ ] #4 Build Swarm Overview and Bee detail screens
+- [x] #1 Bootstrap BeeChief Go TUI with Bubble Tea
+- [x] #2 Add Hive host configuration and local/SSH execution layer
+- [x] #3 Discover OpenClaw agents dynamically on every Hive
+- [x] #4 Build Swarm Overview and Bee detail screens
 
 ### Exit criteria
 
@@ -47,8 +47,8 @@ BeeChief loads configured Hives, reports unreachable machines without failing, d
 
 Goal: inspect what each Bee can actually do and make skill maintenance manageable.
 
-- [ ] #5 Add Comb skill inspection and per-Bee skill checks
-- [ ] #6 Add Bee self-review and Workshop proposal management
+- [x] #5 Add Comb skill inspection and per-Bee skill checks
+- [x] #6 Add Bee self-review and Workshop proposal management
 
 ### Exit criteria
 
@@ -60,9 +60,9 @@ A user can select any discovered Bee, inspect its visible skills, run skill chec
 
 Goal: turn the archaeology expedition into a menu.
 
-- [ ] #7 Implement Hive Health quick diagnostics
-- [ ] #8 Add systemd, Docker, Ollama, and model troubleshooting
-- [ ] #9 Build unified log browser with filtering and follow mode
+- [x] #7 Implement Hive Health quick diagnostics
+- [x] #8 Add systemd, Docker, Ollama, and model troubleshooting
+- [x] #9 Build unified log browser with filtering and follow mode
 
 ### Exit criteria
 
@@ -74,9 +74,9 @@ BeeChief can perform a read-only health pass, isolate common host/service/model 
 
 Goal: operate on the fleet instead of babysitting one Bee at a time.
 
-- [ ] #10 Implement Swarm Review across selected or all Bees
-- [ ] #11 Generate portable Honey Report diagnostics
-- [ ] #12 Add interactive Hive configuration wizard
+- [x] #10 Implement Swarm Review across selected or all Bees
+- [x] #11 Generate portable Honey Report diagnostics
+- [x] #12 Add interactive Hive configuration wizard
 
 ### Exit criteria
 
