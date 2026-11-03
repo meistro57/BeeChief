@@ -1,10 +1,13 @@
 package tui
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/meistro57/beechief/internal/agents"
 )
 
 func TestNewHasSections(t *testing.T) {
@@ -80,5 +83,70 @@ func TestWindowSizeIgnoredSafely(t *testing.T) {
 	mm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	if mm.(Model).width != 80 || mm.(Model).height != 24 {
 		t.Errorf("window size not recorded")
+	}
+}
+
+func fakeInventory() *agents.Inventory {
+	inv := agents.NewInventory()
+	inv.Record(agents.HiveStatus{Hive: "alpha"}, []agents.Bee{{ID: "one"}, {ID: "two"}})
+	inv.Record(agents.HiveStatus{Hive: "beta", Err: errors.New("unreachable")}, nil)
+	return inv
+}
+
+func TestScannerRunsOnInitAndRendersHives(t *testing.T) {
+	calls := 0
+	m := New(WithScanner(func(context.Context) *agents.Inventory {
+		calls++
+		return fakeInventory()
+	}))
+	if !strings.Contains(m.View(), "Scanning") {
+		t.Errorf("expected scanning indicator before first result")
+	}
+	cmd := m.Init()
+	if cmd == nil {
+		t.Fatal("Init should start a scan")
+	}
+	mm, _ := m.Update(cmd())
+	out := mm.(Model).View()
+	if calls != 1 {
+		t.Errorf("scan calls: %d", calls)
+	}
+	for _, want := range []string{"Bees discovered: 2", "alpha: 2 bees", "beta: unreachable", "✗"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("view missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRescanKey(t *testing.T) {
+	calls := 0
+	m := New(WithScanner(func(context.Context) *agents.Inventory {
+		calls++
+		return fakeInventory()
+	}))
+	mm, _ := m.Update(m.Init()())
+
+	r := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")}
+	mm, cmd := mm.(Model).Update(r)
+	if cmd == nil {
+		t.Fatal("r should trigger a rescan")
+	}
+	// A second r while scanning is ignored.
+	if _, again := mm.(Model).Update(r); again != nil {
+		t.Error("rescan while scanning should be ignored")
+	}
+	mm.(Model).Update(cmd())
+	if calls != 2 {
+		t.Errorf("scan calls: got %d, want 2", calls)
+	}
+}
+
+func TestNoScannerIsInert(t *testing.T) {
+	m := New()
+	if m.Init() != nil {
+		t.Error("Init without scanner should do nothing")
+	}
+	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")}); cmd != nil {
+		t.Error("r without scanner should do nothing")
 	}
 }

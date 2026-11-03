@@ -1,0 +1,23 @@
+# BeeChief Hive configuration (example).
+#
+# Copy to ~/.config/beechief/hosts.yaml (or point $BEECHIEF_CONFIG at it)
+# and edit. Only machines are configured here; OpenClaw agents (Bees) are
+# discovered automatically on each Hive.
+#
+# Never put passwords or keys in this file. SSH Hives use your existing
+# ~/.ssh/config, ssh-agent, and key files. BeeChief runs ssh in BatchMode,
+# so a host that would prompt for a password fails fast instead of hanging.
+
+hives:
+  # The machine running BeeChief.
+  - name: work-pc
+    type: local
+
+  # A remote machine reached over SSH. "host" may be a hostname, an IP, or
+  # a Host alias defined in ~/.ssh/config.
+  - name: qmu
+    type: ssh
+    host: qmu-server
+    user: root
+    # port: 22            # optional; defaults to your SSH config
+    # label: Basement box # optional description
