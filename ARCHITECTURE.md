@@ -22,6 +22,33 @@ internal/config       YAML Hive configuration loader, validator, and round-trip 
 internal/agents       plain data models: Bee, Inventory, HiveStatus
 ```
 
+```mermaid
+flowchart TD
+    CLI["cmd/beechief"] --> APP["internal/app"]
+    APP --> TUI["internal/tui (Bubble Tea Views + Ops Interface)"]
+    APP --> REP["internal/report (Honey Report + Secret Redaction)"]
+    APP --> SWARM["internal/swarm (Multi-Bee Coordinator)"]
+    APP --> LOGS["internal/logs (Journalctl / Docker / Gateway / Agent)"]
+    APP --> SVC["internal/services (systemd / Docker / Ollama & Models)"]
+    APP --> DIAG["internal/diagnostics (11 Hive Health Checks)"]
+    APP --> DISC["internal/discovery (Concurrent Hive Scanner)"]
+    REP --> DIAG
+    REP --> SVC
+    REP --> LOGS
+    REP --> OC["internal/openclaw (CLI Adapter + JSON/Text Parsers)"]
+    SWARM --> OC
+    SVC --> OC
+    DIAG --> OC
+    DISC --> OC
+    OC --> HOSTS["internal/hosts (Execution: Local & SSH)"]
+    LOGS --> HOSTS
+    SVC --> HOSTS
+    DIAG --> HOSTS
+    HOSTS --> CFG["internal/config (YAML Load/Save/Validate)"]
+    DISC --> AGENTS["internal/agents (Bee, Inventory, HiveStatus)"]
+    TUI --> AGENTS
+```
+
 ## Design choices
 
 **One execution interface.** `hosts.Execution` has a single method,

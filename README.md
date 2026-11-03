@@ -130,6 +130,38 @@ interactive-only guard, or `~/.ssh/environment` where it is enabled).
 - Open **Settings** to add a local Hive (`l`) or SSH Hive (`a`), edit an existing Hive (`e`/`enter`), or remove a Hive with confirmation (`d`).
 - Test SSH reachability and OpenClaw CLI presence (`t`) before saving, and automatically trigger a fleet rescan on save (`s`).
 
+## Keyboard Reference
+
+| Screen | Key(s) | Action |
+|---|---|---|
+| **Global** | `↑/↓` or `k/j` | Move selection cursor |
+| **Global** | `r` | Rescan all configured Hives |
+| **Global** | `esc` / `b` | Return to previous screen (or quit on root screen) |
+| **Global** | `q` / `ctrl+c` | Quit BeeChief |
+| **Swarm Overview / Bees** | `/` | Filter discovered Bees by ID, name, Hive, or model |
+| **Swarm Overview / Bees** | `enter` | Open selected Bee detail screen |
+| **Swarm Overview / Troubleshooting** | `e` | Export portable, secret-redacted Honey Report |
+| **Bee Detail** | `enter` | Execute selected Bee action (status, Comb, check, review, Workshop, curator, model, custom instruction) |
+| **Comb / Skills** | `[` / `]` | Switch active Bee |
+| **Comb / Skills** | `l` / `c` / `v` | List skills (`l`), run skill check (`c`), toggle raw CLI output (`v`) |
+| **Self Review** | `s` / `w` / `enter` | Run Bee self-review (`s`), refresh Workshop list (`w`), inspect proposal (`enter`) |
+| **Self Review (Swarm)** | `1` / `2` / `3` / `x` | Run Swarm Review on selected Bee (`1`), Hive (`2`), or all reachable Hives (`3`); cancel (`x`) |
+| **Troubleshooting** | `[` / `]` / `h` / `s` | Switch Hive (`[`/`]`), run Hive Health pass (`h`), toggle severity sort (`s`) |
+| **Services** | `tab` / `[` / `]` | Switch subsystem (`systemd`, `Docker`, `Models & Ollama`) / switch Hive |
+| **Services (systemd)** | `enter` / `S` / `T` / `R` | Inspect unit details & logs (`enter`); start (`S`), stop (`T`), or restart (`R`) with `[y/N]` confirmation |
+| **Logs** | `tab` / `t` / `f` / `c` | Cycle source (`tab`), set target (`t`), toggle follow mode (`f`), show CLI command (`c`) |
+| **Logs (Filters)** | `e` / `w` / `/` | Toggle errors-only (`e`), warnings+errors (`w`), or text search (`/`) |
+| **Settings (Wizard)** | `l` / `a` / `e` / `d` / `t` / `s` | Add local (`l`) or SSH (`a`) Hive, edit (`e`), delete with confirm (`d`), test connection (`t`), save & rescan (`s`) |
+
+## CLI Reference
+
+| Command | Description |
+|---|---|
+| `beechief` | Launch the interactive Bubble Tea terminal control center |
+| `beechief diagnose` | Run a read-only fleet diagnostic pass and print the redacted Markdown Honey Report to stdout |
+| `beechief diagnose --export` | Export the redacted Honey Report to `honey-report-<timestamp>.md` |
+| `beechief diagnose --export -o <path>` | Export the redacted Honey Report to `<path>` |
+
 ## Development
 
 ```bash

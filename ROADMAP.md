@@ -6,6 +6,8 @@
 
 BeeChief is a Go terminal operations console for discovering, managing, reviewing, diagnosing, and maintaining OpenClaw agents across multiple machines.
 
+> **Current Status:** Milestones **v0.1** through **v0.4** (`#1`–`#12`) are complete. Next up: **v0.5 — Hardening**.
+
 The design rule is simple:
 
 > **Hosts are configured. Agents are discovered. Skills are discovered. Services are inspected. Nothing agent-specific is hard-coded.**
