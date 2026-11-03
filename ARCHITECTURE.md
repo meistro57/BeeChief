@@ -1,3 +1,7 @@
+<p align="right">
+  <img src="assets/BeeChief_avatar.svg" alt="BeeChief Avatar" width="96" />
+</p>
+
 # BeeChief architecture
 
 This file explains how the code is laid out and why. Each layer depends only on the layers below it.

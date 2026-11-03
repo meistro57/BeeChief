@@ -363,8 +363,12 @@ func (m Model) View() string {
 
 func (m Model) viewRoot() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("BeeChief 🐝"))
+	b.WriteString(titleStyle.Render("⬢ BeeChief 👑🐝"))
+	b.WriteString("  ")
+	b.WriteString(taglineStyle.Render("THE SWARM COMMAND CENTER"))
 	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("One terminal. Every hive. Discover, review & diagnose your agents."))
+	b.WriteString("\n\n")
 	b.WriteString(fmt.Sprintf("Bees discovered: %d\n", m.inventory.Total()))
 	b.WriteString(m.hiveSummary())
 	b.WriteString("\n")
@@ -372,6 +376,7 @@ func (m Model) viewRoot() string {
 	for i, s := range m.sections {
 		if i == m.cursor {
 			b.WriteString(cursorStyle.Render("> " + s.Title))
+			b.WriteString("  " + helpStyle.Render("— "+s.Blurb))
 		} else {
 			b.WriteString(plainStyle.Render("  " + s.Title))
 		}

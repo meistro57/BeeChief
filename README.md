@@ -1,4 +1,10 @@
+<p align="center">
+  <img src="assets/BeeChief_banner.svg" alt="BeeChief — The Swarm Command Center" width="100%" />
+</p>
+
 # BeeChief 🐝
+
+**The Swarm Command Center** — *One terminal. Every hive. Discover, review & diagnose your agents.*
 
 A Go terminal control center for managing, reviewing, diagnosing, and maintaining OpenClaw agents across multiple machines.
 
@@ -136,6 +142,16 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the package layout and design choices
 ## Roadmap
 
 See [ROADMAP.md](ROADMAP.md) for the build plan and linked agent-ready GitHub issues.
+
+## Brand & Art Pack
+
+Visual assets live in [`assets/`](assets/):
+
+| Asset | SVG | PNG | Usage |
+|---|---|---|---|
+| **Banner** | [`BeeChief_banner.svg`](assets/BeeChief_banner.svg) | [`BeeChief_banner.png`](assets/BeeChief_banner.png) | Repository hero banner & social preview |
+| **Logo** | [`BeeChief_logo.svg`](assets/BeeChief_logo.svg) | [`BeeChief_logo.png`](assets/BeeChief_logo.png) | Documentation badge & release branding |
+| **Avatar** | [`BeeChief_avatar.svg`](assets/BeeChief_avatar.svg) | [`BeeChief_avatar.png`](assets/BeeChief_avatar.png) | App icon, bot avatar & compact hexagon badge |
 
 ## Status
 

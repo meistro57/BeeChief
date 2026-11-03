@@ -80,14 +80,15 @@ const (
 )
 
 var (
-	titleStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("220"))
-	headerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
-	helpStyle   = lipgloss.NewStyle().Faint(true)
-	cursorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true)
-	plainStyle  = lipgloss.NewStyle()
-	okStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	warnStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-	failStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F5B841"))
+	taglineStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#67E8F9"))
+	headerStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F5B841"))
+	helpStyle    = lipgloss.NewStyle().Faint(true)
+	cursorStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#F5B841")).Bold(true)
+	plainStyle   = lipgloss.NewStyle()
+	okStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	warnStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	failStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 )
 
 // ScanFunc produces a fresh Inventory. The TUI calls it asynchronously and

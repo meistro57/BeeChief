@@ -1,3 +1,7 @@
+<p align="right">
+  <img src="assets/BeeChief_logo.svg" alt="BeeChief Logo" width="120" />
+</p>
+
 # BeeChief Roadmap 🐝
 
 BeeChief is a Go terminal operations console for discovering, managing, reviewing, diagnosing, and maintaining OpenClaw agents across multiple machines.
