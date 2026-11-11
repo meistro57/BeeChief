@@ -6,7 +6,7 @@
 
 BeeChief is a Go terminal operations console for discovering, managing, reviewing, diagnosing, and maintaining OpenClaw agents across multiple machines.
 
-> **Current Status:** Milestones **v0.1** through **v0.5** are complete. Next up: **v1.0 — Stable BeeChief**.
+> **Current Status:** Milestones **v0.1** through **v0.6** are complete. Next up: **v1.0 — Stable BeeChief**.
 
 The design rule is simple:
 
@@ -112,6 +112,23 @@ BeeChief builds reproducibly for Linux, Windows, and macOS via CI/release pipeli
 
 ---
 
+## v0.6 — Web & Automation
+
+Goal: operate BeeChief from a browser and schedule recurring fleet work.
+
+- [x] `beechief web` browser UI with embedded assets, loopback binding, CSRF token, and read-only mode
+- [x] Token-protected JSON API for scans, Bee actions, Hive Health/services, logs, configuration, Swarm Review, and Honey Reports
+- [x] Web-based cron job management with live status
+- [x] Five-field cron scheduler for scan, health, and report jobs (`beechief cron`, `jobs.yaml`)
+- [x] Non-interactive `scan` and `health` commands with JSON output and cron-friendly exit codes
+- [x] Scheduled-job and browser-action events in the redacted event store
+
+### Exit criteria
+
+A user can run `beechief web`, operate the fleet from a browser, define recurring jobs, and use `beechief scan`, `beechief health`, or `beechief cron --once` from an external scheduler.
+
+---
+
 ## v1.0 — Stable BeeChief
 
 Target characteristics:
@@ -124,7 +141,9 @@ Target characteristics:
 - State-changing actions require explicit confirmation.
 - Secret-bearing output is redacted.
 - Core workflows are test-covered.
-- A fresh user can install BeeChief, add a Hive, scan the swarm, diagnose a Bee, and export a Honey Report without reading the source code.
+- Terminal and browser clients share the same operations and redaction paths.
+- Scheduled work is observable through events and safe by default.
+- A fresh user can install BeeChief, add a Hive, scan the swarm, diagnose a Bee, schedule recurring work, and export a Honey Report without reading the source code.
 
 ---
 

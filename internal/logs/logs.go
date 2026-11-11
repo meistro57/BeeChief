@@ -85,10 +85,10 @@ func (f Filter) Apply(entries []Entry) []Entry {
 
 // Result is the output of fetching logs from a Source.
 type Result struct {
-	Source  SourceKind
-	Target  string
-	Command string
-	Entries []Entry
+	Source  SourceKind `json:"source"`
+	Target  string     `json:"target"`
+	Command string     `json:"command"`
+	Entries []Entry    `json:"entries"`
 }
 
 // Source fetches bounded logs from a Hive and reports the underlying command.

@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="beechief-token" content="{{TOKEN}}">
+  <title>BeeChief Web</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="bee">🐝</span>
+      <span>BeeChief</span>
+      <span class="muted">Web</span>
+    </div>
+    <div class="top-actions">
+      <span id="version" class="pill"></span>
+      <span id="readonly-pill" class="pill warn hidden">read-only</span>
+      <button id="scan-btn" class="primary">Rescan</button>
+      <button id="report-btn" class="secondary">Honey Report</button>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button data-tab="swarm" class="active">Swarm</button>
+    <button data-tab="bee">Bee</button>
+    <button data-tab="hive">Hive</button>
+    <button data-tab="logs">Logs</button>
+    <button data-tab="jobs">Jobs</button>
+    <button data-tab="settings">Settings</button>
+  </nav>
+
+  <div id="banner" class="banner hidden"></div>
+
+  <main>
+    <section id="tab-swarm" class="tab active">
+      <div class="section-head">
+        <h2>Swarm Overview</h2>
+        <span id="swarm-summary" class="muted"></span>
+      </div>
+      <div id="hive-cards" class="cards"></div>
+
+      <div class="panel">
+        <div class="section-head">
+          <h3>Swarm Review</h3>
+          <span class="muted">Read-only self-review across Bees</span>
+        </div>
+        <div class="form-row">
+          <label>Scope
+            <select id="swarm-mode">
+              <option value="all_reachable">All reachable Bees</option>
+              <option value="selected_hive">Selected Hive</option>
+              <option value="selected_bee">Selected Bee</option>
+            </select>
+          </label>
+          <label>Hive
+            <select id="swarm-hive"></select>
+          </label>
+          <button id="swarm-start" class="primary">Start review</button>
+          <button id="swarm-cancel" class="danger hidden">Cancel</button>
+        </div>
+        <div id="swarm-progress"></div>
+      </div>
+    </section>
+
+    <section id="tab-bee" class="tab">
+      <div class="section-head">
+        <h2 id="bee-title">Bee</h2>
+        <span id="bee-subtitle" class="muted"></span>
+      </div>
+      <div id="bee-actions" class="actions"></div>
+      <div id="bee-extra"></div>
+      <div id="bee-output" class="output"></div>
+    </section>
+
+    <section id="tab-hive" class="tab">
+      <div class="section-head">
+        <h2>Hive</h2>
+        <span class="muted">Health, services, and models</span>
+      </div>
+      <div class="form-row">
+        <label>Hive <select id="hive-select"></select></label>
+        <button id="health-btn" class="primary">Run Hive Health</button>
+        <button id="services-btn" class="secondary">Inspect services</button>
+      </div>
+      <div id="hive-output"></div>
+      <pre id="hive-raw" class="output"></pre>
+    </section>
+
+    <section id="tab-logs" class="tab">
+      <div class="section-head">
+        <h2>Logs</h2>
+        <span class="muted">Bounded tails from the selected Hive</span>
+      </div>
+      <div class="form-row">
+        <label>Hive <select id="log-hive"></select></label>
+        <label>Source
+          <select id="log-source">
+            <option value="journalctl">journalctl</option>
+            <option value="docker">docker</option>
+            <option value="openclaw">openclaw gateway</option>
+            <option value="agent">agent status</option>
+            <option value="events">BeeChief events</option>
+          </select>
+        </label>
+        <label>Target <input id="log-target" placeholder="unit, container, agent, or filter"></label>
+        <label class="check"><input id="log-errors" type="checkbox"> errors only</label>
+        <button id="log-fetch" class="primary">Fetch</button>
+      </div>
+      <div id="log-output" class="output tall"></div>
+    </section>
+
+    <section id="tab-jobs" class="tab">
+      <div class="section-head">
+        <h2>Cron Jobs</h2>
+        <span id="jobs-path" class="muted"></span>
+      </div>
+      <div id="jobs-list"></div>
+      <div class="panel">
+        <h3 id="job-form-title">Add job</h3>
+        <div class="form-grid">
+          <label>Name <input id="job-name" placeholder="nightly-scan"></label>
+          <label>Kind
+            <select id="job-kind">
+              <option value="scan">scan</option>
+              <option value="health">health</option>
+              <option value="report">report</option>
+            </select>
+          </label>
+          <label>Cron <input id="job-schedule" placeholder="0 3 * * *"></label>
+          <label>Hive (optional) <input id="job-hive" placeholder="all Hives"></label>
+          <label>Report output (optional) <input id="job-output" placeholder="honey-report.md"></label>
+          <label class="check"><input id="job-disabled" type="checkbox"> disabled</label>
+        </div>
+        <div class="form-row">
+          <button id="job-save" class="primary">Save job</button>
+          <button id="job-reset" class="secondary">Clear</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-settings" class="tab">
+      <div class="section-head">
+        <h2>Hive Settings</h2>
+        <span id="config-path" class="muted"></span>
+      </div>
+      <div id="hives-list"></div>
+      <div class="panel">
+        <h3 id="hive-form-title">Add Hive</h3>
+        <div class="form-grid">
+          <label>Name <input id="hive-name" placeholder="basement"></label>
+          <label>Type
+            <select id="hive-type">
+              <option value="local">local</option>
+              <option value="ssh">ssh</option>
+            </select>
+          </label>
+          <label>SSH host <input id="hive-host" placeholder="host or ~/.ssh alias"></label>
+          <label>SSH user <input id="hive-user" placeholder="optional"></label>
+          <label>SSH port <input id="hive-port" type="number" min="1" max="65535" placeholder="optional"></label>
+          <label>Label <input id="hive-label" placeholder="optional"></label>
+        </div>
+        <div class="form-row">
+          <button id="hive-save" class="primary">Save Hive</button>
+          <button id="hive-test" class="secondary">Test connection</button>
+          <button id="hive-reset" class="secondary">Clear</button>
+        </div>
+        <pre id="hive-test-output" class="output"></pre>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    BeeChief operations console. Local-only by default; keep this port private.
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

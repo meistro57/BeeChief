@@ -2,7 +2,7 @@
 # BeeChief install & update script for Linux and macOS.
 #
 # Usage:
-#   ./scripts/install.sh [--from-source] [--version v0.5.0] [--prefix ~/.local/bin]
+#   ./scripts/install.sh [--from-source] [--version v0.6.0] [--prefix ~/.local/bin]
 #   curl -fsSL https://raw.githubusercontent.com/meistro57/beechief/main/scripts/install.sh | bash
 set -euo pipefail
 
@@ -68,7 +68,7 @@ install_from_source() {
     exit 1
   fi
   if [ -f "go.mod" ] && [ -d "cmd/beechief" ]; then
-    VER_TAG="$(git describe --tags --always --dirty 2>/dev/null || echo "v0.5.0")"
+    VER_TAG="$(git describe --tags --always --dirty 2>/dev/null || echo "v0.6.0")"
     echo "==> Building BeeChief (${VER_TAG}) from local source..."
     CGO_ENABLED=0 go build -trimpath \
       -ldflags "-s -w -X github.com/meistro57/beechief/internal/report.DefaultVersion=${VER_TAG}" \

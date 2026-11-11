@@ -1,4 +1,4 @@
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "v0.5.0")
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "v0.6.0")
 LDFLAGS := -s -w -X github.com/meistro57/beechief/internal/report.DefaultVersion=$(VERSION)
 
 .PHONY: all build test vet release install clean

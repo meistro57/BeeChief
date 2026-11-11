@@ -8,7 +8,9 @@ This file explains how the code is laid out and why. Each layer depends only on 
 
 ```text
 cmd/beechief          entrypoint
-internal/app          wiring: load/save config → build Scanner, Ops & Event Store → start TUI or CLI diagnose/version
+internal/app          wiring: load/save config → build Scanner, Ops, Job Runner & Event Store → start TUI, web, or CLI
+internal/web          embedded browser UI + token-protected JSON API (swarm, Bee, Hive, logs, jobs, settings)
+internal/jobs         five-field cron parser, jobs.yaml persistence, and in-process job scheduler
 internal/tui          Bubble Tea UI; consumes Inventory and Ops interface without shell logic (NO_COLOR & viewport windowing)
 internal/events       secret-redacted JSONL operational event store with ring buffer and size-based log rotation
 internal/report       Honey Report diagnostic collector, Markdown renderer, and secret redaction
@@ -27,6 +29,8 @@ internal/agents       plain data models: Bee, Inventory, HiveStatus, and structu
 flowchart TD
     CLI["cmd/beechief"] --> APP["internal/app"]
     APP --> TUI["internal/tui (Bubble Tea Views + Ops Interface)"]
+    APP --> WEB["internal/web (Embedded UI + JSON API)"]
+    APP --> JOBS["internal/jobs (Cron Scheduler)"]
     APP --> EVT["internal/events (Redacted JSONL Event Store)"]
     APP --> REP["internal/report (Honey Report + Secret Redaction)"]
     APP --> SWARM["internal/swarm (Multi-Bee Coordinator)"]
@@ -138,6 +142,23 @@ automatically upgrades legacy v0 schemas (`hosts:` top-level key, `hostname:` /
 unknown keys (such as a stray `password:`) and future unsupported schema
 versions (`version > 1`). `config.Save` stamps `version: 1`, validates before
 writing, and preserves existing file permissions.
+
+**Browser UI shares the same backend.** `internal/web` depends only on a
+narrow `web.Backend` interface, which `app.backend` satisfies. It does not
+import `app` or `tui`, so terminal and browser clients exercise the same
+operations and redaction paths. The UI is embedded with `go:embed` and uses
+no CDN or build step. Requests require a per-process CSRF token and the server
+binds loopback by default; `--read-only` rejects config mutations, service
+control, instructions, Swarm Review starts, and job edits/runs. Long-running
+Swarm Reviews run in a background coordinator and are polled, so HTTP handlers
+never block on `coordinator.Run`.
+
+**Scheduled jobs are first-class operations.** `internal/jobs` parses
+five-field cron expressions, persists job definitions in a separate
+`jobs.yaml`, and runs `scan`, `health`, and `report` jobs through a
+`jobs.Runner` implemented by `app.backend`. `beechief cron --once` makes every
+enabled job runnable from external cron, while the daemon form and the web UI
+use the same manager. Every run is recorded as a redacted `job_run` event.
 
 **UI knows nothing about operations.** The TUI receives a `ScanFunc` and a
 `tui.Ops` interface, rendering the resulting domain structs. Scans, skill

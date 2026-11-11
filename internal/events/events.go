@@ -43,6 +43,7 @@ const (
 	KindHoneyReport    Kind = "honey_report"
 	KindConfigChange   Kind = "config_change"
 	KindInstruction    Kind = "instruction"
+	KindJobRun         Kind = "job_run"
 )
 
 // Level classifies event severity.

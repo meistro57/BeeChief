@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,6 +79,77 @@ func TestVersionCLI(t *testing.T) {
 		}
 		if !strings.HasPrefix(stdout.String(), "beechief v") {
 			t.Errorf("RunArgs(%q) output = %q, want prefix 'beechief v'", arg, stdout.String())
+		}
+	}
+}
+
+func TestScanCLIWithNoHives(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv(config.EnvConfigPath, filepath.Join(tmp, "hosts.yaml"))
+	var out bytes.Buffer
+	if err := RunArgs([]string{"scan", "--json"}, &out); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	var resp scanResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("decode scan JSON: %v\n%s", err, out.String())
+	}
+	if resp.Total != 0 || resp.Failed != 0 || len(resp.Hives) != 0 {
+		t.Errorf("unexpected scan response: %+v", resp)
+	}
+}
+
+func TestHealthCLIWithNoHives(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv(config.EnvConfigPath, filepath.Join(tmp, "hosts.yaml"))
+	var out bytes.Buffer
+	if err := RunArgs([]string{"health", "--json"}, &out); err != nil {
+		t.Fatalf("health: %v", err)
+	}
+	if strings.TrimSpace(out.String()) != "[]" {
+		t.Errorf("unexpected health output: %q", out.String())
+	}
+}
+
+func TestCronCLIOnce(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "hosts.yaml")
+	jobsPath := filepath.Join(tmp, "jobs.yaml")
+	t.Setenv(config.EnvConfigPath, cfgPath)
+	t.Setenv(events.EnvEventsPath, filepath.Join(tmp, "events.jsonl"))
+	if err := os.WriteFile(jobsPath, []byte("version: 1\njobs:\n  - name: nightly\n    kind: scan\n    schedule: \"0 3 * * *\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := RunArgs([]string{"cron", "--once", "--file", jobsPath}, &out); err != nil {
+		t.Fatalf("cron: %v", err)
+	}
+	if !strings.Contains(out.String(), "Job nightly (scan)") {
+		t.Errorf("unexpected cron output: %q", out.String())
+	}
+}
+
+func TestWebCLIRejectsRemoteBindWithoutOptIn(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv(config.EnvConfigPath, filepath.Join(tmp, "hosts.yaml"))
+	var out bytes.Buffer
+	if err := RunArgs([]string{"web", "--addr", "0.0.0.0:8099"}, &out); err == nil {
+		t.Fatal("expected remote bind to be rejected")
+	}
+}
+
+func TestIsLoopbackHost(t *testing.T) {
+	cases := map[string]bool{
+		"127.0.0.1":   true,
+		"::1":         true,
+		"localhost":   true,
+		"":            false,
+		"0.0.0.0":     false,
+		"example.com": false,
+	}
+	for host, want := range cases {
+		if got := isLoopbackHost(host); got != want {
+			t.Errorf("isLoopbackHost(%q) = %v, want %v", host, got, want)
 		}
 	}
 }

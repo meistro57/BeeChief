@@ -55,8 +55,19 @@ func RunArgs(args []string, stdout io.Writer) error {
 		return err
 	}
 
-	if len(args) > 0 && args[0] == "diagnose" {
-		return runDiagnoseCLI(cfg, args[1:], stdout)
+	if len(args) > 0 {
+		switch args[0] {
+		case "diagnose":
+			return runDiagnoseCLI(cfg, args[1:], stdout)
+		case "scan":
+			return runScanCLI(cfg, args[1:], stdout)
+		case "health":
+			return runHealthCLI(cfg, args[1:], stdout)
+		case "cron":
+			return runCronCLI(cfgPath, cfg, args[1:], stdout)
+		case "web":
+			return runWebCLI(cfgPath, cfg, args[1:], stdout)
+		}
 	}
 
 	backend := newBackend(cfgPath, cfg)

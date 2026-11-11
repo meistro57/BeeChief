@@ -13,23 +13,23 @@ import (
 // Bee is a single OpenClaw agent discovered on a Hive.
 type Bee struct {
 	// ID is the agent identifier reported by OpenClaw.
-	ID string
+	ID string `json:"id"`
 	// Name is the display name, if the agent reports one.
-	Name string
+	Name string `json:"name,omitempty"`
 	// Hive is the name of the Hive this Bee was discovered on.
-	Hive string
+	Hive string `json:"hive,omitempty"`
 	// Runtime is the agent runtime/model identifier, if reported.
-	Runtime string
+	Runtime string `json:"runtime,omitempty"`
 	// Emoji is the agent's identity emoji, if reported.
-	Emoji string
+	Emoji string `json:"emoji,omitempty"`
 	// Workspace is the agent's workspace directory on its Hive, if reported.
-	Workspace string
+	Workspace string `json:"workspace,omitempty"`
 	// AgentDir is the agent's state directory on its Hive, if reported.
-	AgentDir string
+	AgentDir string `json:"agentDir,omitempty"`
 	// Status is a free-form status string, if OpenClaw reports one.
-	Status string
+	Status string `json:"status,omitempty"`
 	// Default reports whether OpenClaw marks this as the Hive's default agent.
-	Default bool
+	Default bool `json:"default,omitempty"`
 }
 
 // Key uniquely identifies a Bee across the whole swarm. Agent IDs are only

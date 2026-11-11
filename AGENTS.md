@@ -1,7 +1,7 @@
 # AGENTS.md
 
-BeeChief is a Go terminal operations console for discovering, inspecting, and
-diagnosing OpenClaw agents across multiple machines. Machines are **Hives**
+BeeChief is a Go terminal and browser operations console for discovering,
+inspecting, and diagnosing OpenClaw agents across multiple machines. Machines are **Hives**
 (configured), agents are **Bees** (discovered), skills are the **Comb**.
 
 Read `ARCHITECTURE.md` for the design rationale and `README.md` for user-facing
@@ -18,6 +18,10 @@ make release      # cross-platform archives + SHA256SUMS.txt into dist/
 make install      # ./scripts/install.sh --from-source
 go run ./cmd/beechief
 go run ./cmd/beechief diagnose --export --output honey-report.md
+go run ./cmd/beechief web                  # browser UI on 127.0.0.1:8080
+go run ./cmd/beechief scan --json
+go run ./cmd/beechief health --json --fail-on fail
+go run ./cmd/beechief cron --once
 ```
 
 There is no configured linter or formatter task. `go vet` and `go test -race`
@@ -26,20 +30,21 @@ are the supported gates, which is what CI runs (`.github/workflows/ci.yml`).
 ## Architecture and data flow
 
 Strict one-way dependency layering. Higher layers never leak downward:
-`cmd -> app -> {tui, events, report, swarm, logs, services, diagnostics, discovery} -> openclaw -> hosts -> config`, with `agents` as shared plain data.
+`cmd -> app -> {tui, web, jobs, events, report, swarm, logs, services, diagnostics, discovery} -> openclaw -> hosts -> config`, with `agents` as shared plain data.
 
 ```text
 Hive config -> hosts.Execution (local/SSH) -> openclaw.Client -> parse.go
                                    |
-discovery.Scanner -> agents.Inventory -> tui.Model -> views.go
+discovery.Scanner -> agents.Inventory -> {tui.Model -> views.go, web.Server -> JSON API}
                                    |
-                     report / events / logs / diagnostics / services / swarm
+                     report / events / jobs / logs / diagnostics / services / swarm
 ```
 
 - `cmd/beechief/main.go` only delegates to `app.Run()`.
 - `internal/app` owns startup, config load/save, CLI dispatch (`version`,
-  `diagnose`), backend construction, and the `tui.Ops` implementation. It
-  contains no rendering and no raw shell strings.
+  `diagnose`, `web`, `scan`, `health`, `cron`), backend construction, the
+  `tui.Ops` implementation, the web `Backend` implementation, and the scheduled
+  job runner. It contains no rendering and no raw shell strings.
 - `internal/tui` is the Bubble Tea model. `app.go` holds state, `Update`,
   messages, and key handling; `views.go` holds rendering. It must not contain
   shell commands or OpenClaw specifics.
@@ -54,6 +59,11 @@ discovery.Scanner -> agents.Inventory -> tui.Model -> views.go
   names to code or config.
 - `internal/agents` holds plain domain data (`Bee`, `Inventory`,
   `HiveStatus`) and filtering. No I/O.
+- `internal/web` serves the embedded browser UI and JSON API. It depends on the
+  domain packages but never on `app` or `tui`.
+- `internal/jobs` owns the cron expression parser, job definitions, the
+  in-process scheduler, and the jobs YAML file. It knows nothing about HTTP or
+  the terminal.
 
 ### Key invariants
 
@@ -84,7 +94,9 @@ discovery.Scanner -> agents.Inventory -> tui.Model -> views.go
 
 | Package | Responsibility |
 |---|---|
-| `internal/app` | Wiring, backend, CLI (`version`, `diagnose`), config save/rescan |
+| `internal/app` | Wiring, backend, CLI (`version`, `diagnose`, `web`, `scan`, `health`, `cron`), config save/rescan, job runner |
+| `internal/web` | Embedded browser UI, token-protected JSON API, swarm polling |
+| `internal/jobs` | Cron parser, `jobs.yaml`, scheduler, run state |
 | `internal/tui` | Bubble Tea model, screens, key handling, views, `Ops` interface |
 | `internal/events` | Ring buffer + size-rotated 0600 JSONL event store |
 | `internal/report` | Honey Report collection, Markdown rendering, `Export`, `Redact` |
@@ -120,6 +132,37 @@ discovery.Scanner -> agents.Inventory -> tui.Model -> views.go
   `tea.WindowSizeMsg`; use `tui.WithScanner` / `tui.WithOps` and the
   `fakeOps` pattern in `app_test.go`.
 
+## Web UI conventions
+
+- `internal/web` exposes a narrow `web.Backend` interface. `app.backend`
+  satisfies it; do not import `app` from `web`.
+- The server embeds `internal/web/static` with `//go:embed`. Keep the UI
+  dependency-free: no CDN assets, no build step. It must work offline.
+- Bind loopback by default. Non-loopback addresses require `--allow-remote`.
+  Every API request needs the per-process `X-BeeChief-Token`; mutating actions
+  are additionally blocked by `--read-only`.
+- Do not weaken the CSRF/same-origin checks or the CSP in `Server.Handler`.
+  Serve dynamic values with `textContent`, never `innerHTML`. If `node` is
+  available, validate changes with `node --check internal/web/static/app.js`.
+- Long operations run inside the HTTP request for scans/health/services.
+  Swarm Review uses a background coordinator and the client polls
+  `GET /api/swarm?id=...`; do not block an HTTP handler on `coordinator.Run`.
+- In read-only mode the scheduler is not started and config, service control,
+  instructions, swarm starts, and job edits/runs are rejected.
+
+## Scheduled jobs
+
+- Job kinds are `scan`, `health`, and `report`; schedules are five-field cron
+  expressions evaluated in the process local time. `jobs.Manager` owns persistence and scheduling; `app.backend`
+  provides the `jobs.Runner` via `RunJob`.
+- `beechief cron --once` runs every enabled job once for external cron. The
+  daemon form uses the same manager. A failed `Result.Err` makes `--once` exit
+  non-zero; partial scan/health failures are reported that way.
+- Scheduled jobs are recorded as `job_run` events and redacted like all other
+  events. Keep job definitions free of secrets.
+- The jobs file is separate from `hosts.yaml`; do not add jobs to the Hive
+  config schema.
+
 ## Testing conventions
 
 - Standard library `testing` only; no assertion or mock frameworks.
@@ -131,6 +174,10 @@ discovery.Scanner -> agents.Inventory -> tui.Model -> views.go
 - Tests call real local binaries in a few places (`echo`, `sh`, `sleep`,
   `true`); the SSH test skips when `ssh` is absent. Keep new tests hermetic.
 - `go test -race ./...` must pass. Tests are fast except `internal/hosts`.
+- Web tests use `httptest` with a fake `web.Backend`; include the session token
+  header and test auth/origin rejection when adding routes.
+- Jobs tests use a fake `jobs.Runner`; keep scheduler tests deterministic by
+  calling `RunNow` rather than waiting on wall-clock ticks.
 
 ## Formatting note
 

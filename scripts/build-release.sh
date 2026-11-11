@@ -2,7 +2,7 @@
 # Build cross-platform BeeChief release binaries and archives (Linux, Windows, macOS).
 set -euo pipefail
 
-VERSION="${1:-$(git describe --tags --always --dirty 2>/dev/null || echo "v0.5.0")}"
+VERSION="${1:-$(git describe --tags --always --dirty 2>/dev/null || echo "v0.6.0")}"
 OUT_DIR="${2:-${OUT_DIR:-dist}}"
 PKG="github.com/meistro57/beechief/internal/report"
 LDFLAGS="-s -w -X ${PKG}.DefaultVersion=${VERSION}"
@@ -40,6 +40,7 @@ for target in "${TARGETS[@]}"; do
   cp README.md LICENSE "${STAGE_DIR}/"
   mkdir -p "${STAGE_DIR}/configs"
   cp configs/hosts.example.yaml "${STAGE_DIR}/configs/hosts.example.yaml"
+  cp configs/jobs.example.yaml "${STAGE_DIR}/configs/jobs.example.yaml"
 
   if [ "${GOOS}" = "windows" ]; then
     if command -v zip >/dev/null 2>&1; then

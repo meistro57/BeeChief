@@ -356,11 +356,11 @@ type WorkshopListReport struct {
 
 // SelfReviewReport holds the result of a Bee skill self-review.
 type SelfReviewReport struct {
-	AgentID   string
-	Prompt    string
-	Summary   string
-	RawOutput string
-	Proposals []WorkshopProposal
+	AgentID   string             `json:"agentId"`
+	Prompt    string             `json:"prompt"`
+	Summary   string             `json:"summary"`
+	RawOutput string             `json:"-"`
+	Proposals []WorkshopProposal `json:"proposals"`
 }
 
 // ProviderStatus describes one configured model provider's auth status.

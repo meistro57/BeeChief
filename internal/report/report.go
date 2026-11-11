@@ -19,7 +19,7 @@ import (
 
 // DefaultVersion is the BeeChief version reported when not overridden at build time
 // via -ldflags "-X github.com/meistro57/beechief/internal/report.DefaultVersion=...".
-var DefaultVersion = "v0.5.0"
+var DefaultVersion = "v0.6.0"
 
 // BeeDiagnostic summarizes one Bee's Comb (skills) and Workshop state for a Honey Report.
 type BeeDiagnostic struct {

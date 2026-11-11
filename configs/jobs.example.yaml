@@ -1,0 +1,41 @@
+# BeeChief scheduled jobs (optional).
+#
+# Copy to ~/.config/beechief/jobs.yaml (or point $BEECHIEF_JOBS at it) and
+# start the scheduler with:
+#
+#   beechief cron
+#
+# Run every enabled job once (useful from an external cron/CI runner):
+#
+#   beechief cron --once --file ~/.config/beechief/jobs.yaml
+#
+# Schedules are standard five-field cron expressions:
+#   minute hour day-of-month month day-of-week
+# Fields accept "*", numbers, lists, ranges, and steps. Month and weekday
+# names are accepted (jan..dec, sun..sat).
+
+version: 1
+
+jobs:
+  # Discover Bees across every configured Hive.
+  - name: nightly-scan
+    kind: scan
+    schedule: "0 3 * * *"
+
+  # Run Hive Health on one Hive every hour.
+  - name: hourly-health
+    kind: health
+    schedule: "0 * * * *"
+    hive: basement
+
+  # Export a redacted Honey Report every Monday at 06:00.
+  - name: weekly-report
+    kind: report
+    schedule: "0 6 * * mon"
+    output: honey-report.md
+
+  # Disabled jobs stay on disk but are skipped by the scheduler.
+  - name: paused-report
+    kind: report
+    schedule: "0 6 1 * *"
+    disabled: true

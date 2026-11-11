@@ -6,7 +6,7 @@
 
 **The Swarm Command Center** — *One terminal. Every hive. Discover, review & diagnose your agents.*
 
-A Go terminal control center for managing, reviewing, diagnosing, and maintaining OpenClaw agents across multiple machines.
+A Go terminal and browser control center for managing, reviewing, diagnosing, and maintaining OpenClaw agents across multiple machines.
 
 BeeChief treats machines as **Hives**, OpenClaw agents as **Bees**, and skills as the **Comb**. Hosts are configured; agents, skills, and capabilities are discovered dynamically.
 
@@ -54,6 +54,57 @@ go run ./cmd/beechief diagnose --export --output honey-report.md
 ```
 
 Keys: `↑/↓` (or `k/j`) move · `enter` select · `/` filter/search · `r` rescan all Hives · `esc` back/quit · `q` quit.
+
+## Web UI
+
+Run the browser mode on the machine that hosts BeeChief:
+
+```bash
+beechief web                 # http://127.0.0.1:8080
+beechief web --addr 127.0.0.1:9090
+beechief web --read-only     # diagnostics and inspection only
+```
+
+The web UI covers Swarm Overview and scanning, per-Bee skills/checks/self-review/Workshop/models/instructions, Hive Health and services, the unified log browser, Honey Report export, Hive configuration, and cron job management.
+
+It binds to loopback by default. Binding a non-loopback address requires `--allow-remote` and is not authenticated beyond a per-process API/CSRF token, so keep it behind a private network or reverse proxy with its own auth. `--read-only` disables config edits, service control, instructions, job runs, and background scheduling.
+
+## Automation & cron
+
+Non-interactive commands are available for external schedulers:
+
+```bash
+beechief scan --json                  # exit non-zero if a Hive fails
+beechief scan --allow-failures        # tolerate partial scans
+beechief health --json --fail-on fail # fail on failed checks
+beechief health --hive basement --fail-on warning
+beechief diagnose --export -o honey-report.md
+```
+
+BeeChief also includes a five-field cron scheduler for `scan`, `health`, and `report` jobs; schedules use the process local time. Copy [`configs/jobs.example.yaml`](configs/jobs.example.yaml) to `~/.config/beechief/jobs.yaml` and run:
+
+```bash
+beechief cron                         # long-running scheduler
+beechief cron --file /path/jobs.yaml  # alternate jobs file
+beechief cron --once                  # run every enabled job once
+```
+
+| Job field | Required | Notes |
+|---|---|---|
+| `name` | yes | Unique job identifier. |
+| `kind` | yes | `scan`, `health`, or `report`. |
+| `schedule` | yes | Five-field cron expression (`minute hour day-of-month month day-of-week`). |
+| `hive` | no | Target Hive for `health`/`report`; empty means all configured Hives. |
+| `output` | no | Honey Report path for `report` jobs. |
+| `disabled` | no | Skip the job without deleting it. |
+
+The web UI can add, edit, run, and delete jobs. External cron equivalents are:
+
+```cron
+0 3 * * *   /usr/local/bin/beechief scan --json >> /var/log/beechief-scan.log 2>&1
+0 * * * *   /usr/local/bin/beechief health --fail-on fail
+0 6 * * 1   /usr/local/bin/beechief diagnose --export -o /srv/reports/honey-$(date +\%F).md
+```
 
 ## Configuring Hives
 
@@ -188,6 +239,14 @@ interactive-only guard, or `~/.ssh/environment` where it is enabled).
 | `beechief diagnose` | Run a read-only fleet diagnostic pass and print the redacted Markdown Honey Report to stdout |
 | `beechief diagnose --export` | Export the redacted Honey Report to `honey-report-<timestamp>.md` |
 | `beechief diagnose --export -o <path>` | Export the redacted Honey Report to `<path>` |
+| `beechief web` | Start the browser UI on `127.0.0.1:8080` |
+| `beechief web --addr <host:port>` | Bind the browser UI to another address |
+| `beechief web --allow-remote` | Permit a non-loopback bind (the UI has no user auth) |
+| `beechief web --jobs <path>` | Use an alternate jobs file |
+| `beechief web --read-only` | Disable config, service control, instructions, job edits/runs, and background scheduling |
+| `beechief scan [--json]` | Discover Bees and exit non-zero if a Hive fails |
+| `beechief health [--hive <name>] [--json] [--fail-on fail\|warning\|none]` | Run Hive Health non-interactively |
+| `beechief cron [--file <path>] [--once]` | Run or daemonize scheduled jobs |
 | `beechief version` / `--version` | Print the BeeChief release version |
 
 ### Environment Variables
@@ -196,6 +255,7 @@ interactive-only guard, or `~/.ssh/environment` where it is enabled).
 |---|---|---|
 | `BEECHIEF_CONFIG` | `~/.config/beechief/hosts.yaml` | Override the path to the Hive YAML configuration file |
 | `BEECHIEF_EVENTS_LOG` | `~/.config/beechief/events.jsonl` | Override the path to the persistent redacted JSONL event log |
+| `BEECHIEF_JOBS` | `~/.config/beechief/jobs.yaml` | Override the path to the scheduled jobs file |
 | `NO_COLOR` | *(unset)* | Disable ANSI color styling and render plain-text status glyphs (`[OK]`, `[ERR]`, `[WARN]`) |
 
 ## Development & Release Builds
@@ -226,7 +286,12 @@ Visual assets live in [`assets/`](assets/):
 
 ## Status
 
-Implemented through v0.5 (Hardening):
+Implemented through v0.6 (Web & Automation):
+- Browser UI (`beechief web`) with swarm, Bee, Hive, logs, jobs, and settings screens, a token-protected JSON API, and a read-only mode
+- Non-interactive `scan` and `health` commands with JSON output and cron-friendly exit codes
+- Built-in five-field cron scheduler (`beechief cron`, `jobs.yaml`) with scan, health, and report jobs plus web-based job management
+
+Earlier milestones (v0.1-v0.5):
 - TUI navigation, Swarm Overview, and Bee detail screens (#1, #4)
 - Hive configuration, schema versioning/migration, interactive configuration wizard, and local/SSH execution with `ControlMaster` connection reuse (#2, #12, v0.5)
 - Dynamic OpenClaw agent discovery and cross-version CLI compatibility (#3, v0.5)
