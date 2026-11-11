@@ -155,6 +155,8 @@ func (s *Store) Record(ev Event) error {
 	if ev.Level == "" {
 		ev.Level = LevelInfo
 	}
+	ev.Hive = report.Redact(strings.TrimSpace(ev.Hive))
+	ev.Bee = report.Redact(strings.TrimSpace(ev.Bee))
 	ev.Summary = report.Redact(strings.TrimSpace(ev.Summary))
 	ev.Detail = report.Redact(strings.TrimSpace(ev.Detail))
 

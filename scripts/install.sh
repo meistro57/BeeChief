@@ -109,13 +109,29 @@ install_from_release() {
     return
   fi
 
-  if curl -fsSL "${BASE_URL}/SHA256SUMS.txt" -o "${TMP_DIR}/SHA256SUMS.txt" 2>/dev/null; then
-    echo "==> Verifying SHA-256 checksum..."
-    (
-      cd "${TMP_DIR}"
-      grep " ${ARCHIVE}\$" SHA256SUMS.txt | sha256sum -c - >/dev/null 2>&1 || \
-        grep " ${ARCHIVE}\$" SHA256SUMS.txt | shasum -a 256 -c - >/dev/null 2>&1
-    )
+  if ! curl -fsSL "${BASE_URL}/SHA256SUMS.txt" -o "${TMP_DIR}/SHA256SUMS.txt"; then
+    echo "Error: could not download SHA256SUMS.txt; refusing to install an unverified binary." >&2
+    exit 1
+  fi
+  CHECK_LINE="$(grep " ${ARCHIVE}\$" "${TMP_DIR}/SHA256SUMS.txt" || true)"
+  if [ -z "${CHECK_LINE}" ]; then
+    echo "Error: no checksum entry for ${ARCHIVE}; refusing to install an unverified binary." >&2
+    exit 1
+  fi
+  echo "==> Verifying SHA-256 checksum..."
+  if command -v sha256sum >/dev/null 2>&1; then
+    if ! (cd "${TMP_DIR}" && printf '%s\n' "${CHECK_LINE}" | sha256sum -c -); then
+      echo "Error: checksum verification failed for ${ARCHIVE}." >&2
+      exit 1
+    fi
+  elif command -v shasum >/dev/null 2>&1; then
+    if ! (cd "${TMP_DIR}" && printf '%s\n' "${CHECK_LINE}" | shasum -a 256 -c -); then
+      echo "Error: checksum verification failed for ${ARCHIVE}." >&2
+      exit 1
+    fi
+  else
+    echo "Error: no SHA-256 tool found; refusing to install an unverified binary." >&2
+    exit 1
   fi
 
   tar -C "${TMP_DIR}" -xzf "${TMP_DIR}/${ARCHIVE}"

@@ -30,7 +30,7 @@ Nothing agent-specific should be hard-coded.
 make release
 ```
 
-On Windows PowerShell:
+The Linux/macOS shell installer verifies release archives against `SHA256SUMS.txt` and refuses unverified downloads. On Windows PowerShell:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -FromSource
@@ -72,8 +72,8 @@ hives:
     user: root         # optional
     # port: 22         # optional
     # label: Basement  # optional
-    # control_master: true   # optional (default true on Unix; reuses SSH master socket)
-    # control_persist: 60s   # optional
+    # controlMaster: true    # optional (default true on Unix; reuses SSH master socket)
+    # controlPersist: 60s    # optional
 ```
 
 | Field   | Required  | Notes |
@@ -85,8 +85,8 @@ hives:
 | `user`  | no        | `ssh -l`. |
 | `port`  | no        | `ssh -p`. |
 | `label` | no        | Free-text description. |
-| `control_master` | no | Enable OpenSSH `ControlMaster=auto` connection reuse (default `true` on Linux/macOS). |
-| `control_persist` | no | Idle duration for multiplexed SSH master sockets (default `60s`). |
+| `controlMaster` | no | Enable OpenSSH `ControlMaster=auto` connection reuse (default `true` on Linux/macOS). |
+| `controlPersist` | no | Idle duration for multiplexed SSH master sockets (default `60s`). |
 
 Unknown keys are rejected, so a typo (or a stray `password:`) fails loudly.
 
@@ -141,7 +141,7 @@ interactive-only guard, or `~/.ssh/environment` where it is enabled).
 
 ### Unified Log Browser & Event Persistence (`#9`, `v0.5`)
 - Browse bounded tails across `journalctl`, `docker`, `openclaw` Gateway logs, `agent` status output, and persistent BeeChief `events` on any Hive.
-- Operational events (scans, skill checks, self-reviews, Hive Health passes, systemd actions, Honey Report exports, config saves) are automatically redacted of secrets and persisted to a size-rotated JSONL log (`~/.config/beechief/events.jsonl`).
+- Operational events (scans, skill checks, self-reviews, Swarm Reviews, custom instructions, Hive Health passes, systemd actions, Honey Report exports, config saves) are automatically redacted of secrets and persisted to a size-rotated JSONL log (`~/.config/beechief/events.jsonl`).
 - Filter by errors-only (`e`), warnings+errors (`w`), or text search (`/`).
 - Toggle non-blocking follow mode (`f`) and inspect the exact underlying CLI command (`c`). All remote output is stripped of ANSI/control sequences.
 
@@ -195,14 +195,15 @@ interactive-only guard, or `~/.ssh/environment` where it is enabled).
 | Variable | Default | Description |
 |---|---|---|
 | `BEECHIEF_CONFIG` | `~/.config/beechief/hosts.yaml` | Override the path to the Hive YAML configuration file |
-| `BEECHIEF_EVENTS` | `~/.config/beechief/events.jsonl` | Override the path to the persistent redacted JSONL event log |
+| `BEECHIEF_EVENTS_LOG` | `~/.config/beechief/events.jsonl` | Override the path to the persistent redacted JSONL event log |
 | `NO_COLOR` | *(unset)* | Disable ANSI color styling and render plain-text status glyphs (`[OK]`, `[ERR]`, `[WARN]`) |
 
 ## Development & Release Builds
 
 ```bash
 make build      # Build ./beechief with version ldflags
-make test       # Run go vet and go test -race ./...
+make test       # Run go test -race ./...
+make all        # Run go vet, tests, and build
 make release    # Build Linux, Windows, and macOS release archives + SHA256SUMS.txt into dist/
 make install    # Install beechief to ~/.local/bin (or PREFIX)
 ```

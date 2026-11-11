@@ -375,16 +375,42 @@ func Save(path string, c Config) error {
 	if err != nil {
 		return err
 	}
+	if resolved, resolveErr := filepath.EvalSymlinks(path); resolveErr == nil {
+		path = resolved
+	}
 	perm := fs.FileMode(0o600)
 	if info, statErr := os.Stat(path); statErr == nil {
 		perm = info.Mode().Perm()
 	}
-	if dir := filepath.Dir(path); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return fmt.Errorf("create config directory: %w", err)
-		}
+	dir := filepath.Dir(path)
+	if dir == "" {
+		dir = "."
 	}
-	if err := os.WriteFile(path, data, perm); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, ".hosts-*.tmp")
+	if err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write config: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write config: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 	return nil

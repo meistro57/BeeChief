@@ -64,3 +64,26 @@ func TestStoreRedactsPersistsAndRotates(t *testing.T) {
 		t.Error("expected reloaded Store to read persisted JSONL events")
 	}
 }
+
+func TestStoreRedactsHiveAndBeeFields(t *testing.T) {
+	store := NewStore("", DefaultMaxBytes)
+	if err := store.Record(Event{
+		Kind:    KindInstruction,
+		Level:   LevelInfo,
+		Hive:    "api_key=supersecretvalue",
+		Bee:     "password=hunter2",
+		Summary: "ok",
+	}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	recent := store.Recent(1)
+	if len(recent) != 1 {
+		t.Fatalf("Recent(1): got %d", len(recent))
+	}
+	if strings.Contains(recent[0].Hive, "supersecretvalue") || strings.Contains(recent[0].Bee, "hunter2") {
+		t.Errorf("Hive/Bee were not redacted: %+v", recent[0])
+	}
+	if !strings.Contains(recent[0].Hive, "[REDACTED]") || !strings.Contains(recent[0].Bee, "[REDACTED]") {
+		t.Errorf("expected redaction markers: %+v", recent[0])
+	}
+}

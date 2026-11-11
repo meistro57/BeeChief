@@ -298,6 +298,26 @@ func runeKey(r string) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(r)}
 }
 
+func runCmdUntilIdle(t *testing.T, mm tea.Model, cmd tea.Cmd) tea.Model {
+	t.Helper()
+	for i := 0; cmd != nil && i < 100; i++ {
+		msg := cmd()
+		if msg == nil {
+			return mm
+		}
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			for _, c := range batch {
+				if c != nil {
+					mm = runCmdUntilIdle(t, mm, c)
+				}
+			}
+			return mm
+		}
+		mm, cmd = mm.Update(msg)
+	}
+	return mm
+}
+
 func TestSwarmOverviewAndBeeDetailFlow(t *testing.T) {
 	ops := &fakeOps{cfg: config.Config{Hives: []config.Hive{{Name: "alpha", Type: config.TypeLocal}}}}
 	m := New(WithScanner(func(context.Context) *agents.Inventory {
@@ -390,7 +410,7 @@ func TestSelfReviewWorkshopAndSwarmReviewFlow(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected swarm review cmd")
 	}
-	mm, _ = mm.(Model).Update(cmd())
+	mm = runCmdUntilIdle(t, mm, cmd)
 	if !strings.Contains(mm.(Model).View(), "Swarm Review (all_reachable) — total=2 complete=2") {
 		t.Errorf("swarm review summary missing:\n%s", mm.(Model).View())
 	}
@@ -453,7 +473,7 @@ func TestTroubleshootingServicesLogsAndWizardFlows(t *testing.T) {
 	mModel = mm.(Model)
 	mModel.cursor = 7
 	mm, _ = mModel.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	mm, _ = mm.(Model).Update(runeKey("l")) // add local Hive preset
+	mm, _ = mm.(Model).Update(runeKey("l"))   // add local Hive preset
 	mm, cmd = mm.(Model).Update(runeKey("t")) // test connection
 	mm, _ = mm.(Model).Update(cmd())
 	if !strings.Contains(mm.(Model).View(), "OpenClaw 2026.10.5") {
@@ -492,5 +512,100 @@ func TestAccessibilityNoColorTerminalSizeAndLargeSwarmWindowing(t *testing.T) {
 	view := mm.(Model).View()
 	if !strings.Contains(view, "[showing 1–10 of 30]") {
 		t.Errorf("expected large-swarm pagination indicator in view:\n%s", view)
+	}
+}
+
+func TestStaleBeeAndHiveResultsAreIgnored(t *testing.T) {
+	m := New()
+	inv := fakeInventory()
+	m.inventory = inv
+	bee := inv.ByHive["alpha"][0]
+	m.selectedBee = &bee
+
+	rep := &openclaw.SkillListReport{AgentID: bee.ID}
+	mm, _ := m.Update(skillListMsg{target: "alpha/two", rep: rep})
+	if mm.(Model).skillList != nil {
+		t.Error("stale Bee result was applied")
+	}
+	mm, _ = mm.Update(skillListMsg{target: bee.Key(), rep: rep})
+	if mm.(Model).skillList == nil {
+		t.Error("current Bee result was ignored")
+	}
+
+	mm, _ = mm.Update(hiveHealthMsg{target: "beta", rep: &diagnostics.HiveHealthReport{Hive: "beta"}})
+	if mm.(Model).healthReport != nil {
+		t.Error("stale Hive result was applied")
+	}
+	mm, _ = mm.Update(hiveHealthMsg{target: "alpha", rep: &diagnostics.HiveHealthReport{Hive: "alpha"}})
+	if mm.(Model).healthReport == nil {
+		t.Error("current Hive result was ignored")
+	}
+}
+
+func TestSwarmReviewStartsOnceAndBatchesProgress(t *testing.T) {
+	ops := &fakeOps{}
+	m := New(WithScanner(func(context.Context) *agents.Inventory {
+		return fakeInventory()
+	}), WithOps(ops))
+	mm, _ := m.Update(m.Init()())
+	model := mm.(Model)
+	bee := model.inventory.ByHive["alpha"][0]
+	model.selectedBee = &bee
+	model.screen = screenSelfReview
+
+	mm, cmd := model.Update(runeKey("3"))
+	if cmd == nil {
+		t.Fatal("expected a Swarm Review command")
+	}
+	if mm.(Model).swarmStream == nil {
+		t.Error("expected a progress stream to be installed")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok || len(batch) < 2 {
+		t.Fatalf("expected a batch of run and progress commands, got %T", cmd())
+	}
+
+	mm, again := mm.(Model).Update(runeKey("3"))
+	if again != nil {
+		t.Error("a second Swarm Review should be rejected while one is running")
+	}
+	if !strings.Contains(mm.(Model).View(), "already running") {
+		t.Errorf("expected an already-running notice:\n%s", mm.(Model).View())
+	}
+
+	mm, _ = mm.(Model).Update(runeKey("x"))
+	if mm.(Model).swarmSnap == nil || !mm.(Model).swarmSnap.Done {
+		t.Error("cancel should mark the displayed snapshot as done")
+	}
+	if !strings.Contains(mm.(Model).View(), "canceled") {
+		t.Errorf("expected a cancellation notice:\n%s", mm.(Model).View())
+	}
+}
+
+func TestSwarmStreamDeliversAndClosesSafely(t *testing.T) {
+	stream := newSwarmStream(7, 2)
+	stream.send(swarm.Snapshot{})
+	msg, ok := stream.wait()().(swarmProgressMsg)
+	if !ok || msg.runID != 7 {
+		t.Fatalf("unexpected progress message: %#v", msg)
+	}
+	stream.close()
+	if stream.wait()() != nil {
+		t.Error("closed stream should return a nil message")
+	}
+	stream.send(swarm.Snapshot{}) // must not panic after close
+}
+
+func TestSwarmProgressSchedulesNextWait(t *testing.T) {
+	stream := newSwarmStream(3, 1)
+	m := New()
+	m.swarmStream = stream
+	m.swarmRunID = 3
+	mm, cmd := m.Update(swarmProgressMsg{runID: 3, snap: swarm.Snapshot{Summary: swarm.Summary{Total: 1}}})
+	if cmd == nil {
+		t.Error("a non-final progress update should schedule the next wait")
+	}
+	if _, stale := mm.(Model).Update(swarmProgressMsg{runID: 2, snap: swarm.Snapshot{}}); stale != nil {
+		t.Error("progress from an old run should be ignored")
 	}
 }

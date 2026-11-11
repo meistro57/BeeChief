@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -113,24 +114,81 @@ func WithNoColor(noColor bool) Option {
 
 // Async tea.Msg payloads.
 type (
-	inventoryMsg      struct{ inv *agents.Inventory }
-	skillListMsg      struct{ rep *openclaw.SkillListReport; err error }
-	skillCheckMsg     struct{ rep *openclaw.SkillCheckReport; err error }
-	selfReviewMsg     struct{ rep *openclaw.SelfReviewReport; err error }
-	workshopListMsg   struct{ rep *openclaw.WorkshopListReport; err error }
-	workshopShowMsg   struct{ prop *openclaw.WorkshopProposal; err error }
-	modelStatusMsg    struct{ rep *openclaw.ModelStatusReport; err error }
-	instructionMsg    struct{ reply string; err error }
-	hiveHealthMsg     struct{ rep *diagnostics.HiveHealthReport; err error }
-	servicesMsg       struct{ rep *services.HiveServicesReport; err error }
-	unitDetailMsg     struct{ unit services.SystemdUnit; err error }
-	serviceControlMsg struct{ unit string; action services.ServiceAction; err error }
-	dockerLogsMsg     struct{ container, logs string; err error }
-	logsResultMsg     struct{ res *logs.Result; err error }
-	logFollowTickMsg  struct{ seq int }
-	swarmProgressMsg  struct{ snap swarm.Snapshot }
-	honeyExportMsg    struct{ path string; err error }
-	hiveTestMsg       struct{ res HiveTestResult }
+	inventoryMsg struct{ inv *agents.Inventory }
+	skillListMsg struct {
+		target string
+		rep    *openclaw.SkillListReport
+		err    error
+	}
+	skillCheckMsg struct {
+		target string
+		rep    *openclaw.SkillCheckReport
+		err    error
+	}
+	selfReviewMsg struct {
+		target string
+		rep    *openclaw.SelfReviewReport
+		err    error
+	}
+	workshopListMsg struct {
+		target string
+		rep    *openclaw.WorkshopListReport
+		err    error
+	}
+	workshopShowMsg struct {
+		target string
+		prop   *openclaw.WorkshopProposal
+		err    error
+	}
+	modelStatusMsg struct {
+		target string
+		rep    *openclaw.ModelStatusReport
+		err    error
+	}
+	instructionMsg struct {
+		target, reply string
+		err           error
+	}
+	hiveHealthMsg struct {
+		target string
+		rep    *diagnostics.HiveHealthReport
+		err    error
+	}
+	servicesMsg struct {
+		target string
+		rep    *services.HiveServicesReport
+		err    error
+	}
+	unitDetailMsg struct {
+		target string
+		unit   services.SystemdUnit
+		err    error
+	}
+	serviceControlMsg struct {
+		target, unit string
+		action       services.ServiceAction
+		err          error
+	}
+	dockerLogsMsg struct {
+		target, container, logs string
+		err                     error
+	}
+	logsResultMsg struct {
+		target string
+		source logs.SourceKind
+		res    *logs.Result
+		err    error
+	}
+	logFollowTickMsg struct{ seq int }
+	swarmProgressMsg struct {
+		runID int64
+		snap  swarm.Snapshot
+	}
+	honeyExportMsg struct {
+		path string
+		err  error
+	}
+	hiveTestMsg struct{ res HiveTestResult }
 )
 
 // wizardForm holds in-progress fields for adding or editing a Hive (#12).
@@ -192,6 +250,8 @@ type Model struct {
 	proposalCursor int
 	swarmCoord     *swarm.Coordinator
 	swarmSnap      *swarm.Snapshot
+	swarmStream    *swarmStream
+	swarmRunID     int64
 	swarmCursor    int
 
 	// Troubleshooting / Hive Health & Honey Report (#7, #11)
@@ -230,6 +290,55 @@ type Model struct {
 	noColor bool
 }
 
+type swarmStream struct {
+	runID  int64
+	ch     chan swarm.Snapshot
+	mu     sync.Mutex
+	closed bool
+}
+
+func newSwarmStream(runID int64, capacity int) *swarmStream {
+	if capacity < 1 {
+		capacity = 1
+	}
+	return &swarmStream{runID: runID, ch: make(chan swarm.Snapshot, capacity)}
+}
+
+func (s *swarmStream) send(snap swarm.Snapshot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	select {
+	case s.ch <- snap:
+	default:
+	}
+}
+
+func (s *swarmStream) close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	s.closed = true
+	close(s.ch)
+}
+
+func (s *swarmStream) wait() tea.Cmd {
+	if s == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		snap, ok := <-s.ch
+		if !ok {
+			return nil
+		}
+		return swarmProgressMsg{runID: s.runID, snap: snap}
+	}
+}
+
 // New returns a root model with the default navigation.
 func New(opts ...Option) Model {
 	m := Model{
@@ -261,6 +370,25 @@ func (m Model) scanCmd() tea.Cmd {
 	return func() tea.Msg { return inventoryMsg{inv: scan(context.Background())} }
 }
 
+func (m Model) activeBeeKey() string {
+	if m.selectedBee != nil {
+		return m.selectedBee.Key()
+	}
+	all := m.inventory.AllBees()
+	if len(all) > 0 {
+		return all[0].Key()
+	}
+	return ""
+}
+
+func (m Model) matchesActiveBee(target string) bool {
+	return target == "" || target == m.activeBeeKey()
+}
+
+func (m Model) matchesActiveHive(target string) bool {
+	return target == "" || target == m.activeHive()
+}
+
 // Update implements tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -273,6 +401,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case skillListMsg:
+		if !m.matchesActiveBee(msg.target) {
+			return m, nil
+		}
 		m.busy = false
 		if msg.err != nil {
 			m.statusBanner = fmt.Sprintf("Skills list failed: %v", msg.err)
@@ -284,6 +415,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case skillCheckMsg:
+		if !m.matchesActiveBee(msg.target) {
+			return m, nil
+		}
 		m.busy = false
 		if msg.err != nil {
 			m.statusBanner = fmt.Sprintf("Skill check failed: %v", msg.err)
@@ -295,6 +429,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case selfReviewMsg:
+		if !m.matchesActiveBee(msg.target) {
+			return m, nil
+		}
 		m.busy = false
 		if msg.err != nil {
 			m.statusBanner = fmt.Sprintf("Self-review failed: %v", msg.err)
@@ -311,6 +448,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case workshopListMsg:
+		if !m.matchesActiveBee(msg.target) {
+			return m, nil
+		}
 		m.busy = false
 		if msg.err != nil {
 			m.statusBanner = fmt.Sprintf("Workshop query failed: %v", msg.err)
@@ -326,6 +466,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case workshopShowMsg:
+		if !m.matchesActiveBee(msg.target) {
+			return m, nil
+		}
 		m.busy = false
 		if msg.err != nil {
 			m.statusBanner = fmt.Sprintf("Proposal inspect failed: %v", msg.err)
@@ -336,6 +479,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case modelStatusMsg:
+		if !m.matchesActiveBee(msg.target) {
+			return m, nil
+		}
 		m.busy = false
 		if msg.err != nil {
 			m.statusBanner = fmt.Sprintf("Model status failed: %v", msg.err)
@@ -359,6 +505,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case instructionMsg:
+		if !m.matchesActiveBee(msg.target) {
+			return m, nil
+		}
 		m.busy = false
 		if msg.err != nil {
 			m.statusBanner = fmt.Sprintf("Instruction failed: %v", msg.err)
@@ -370,6 +519,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case hiveHealthMsg:
+		if !m.matchesActiveHive(msg.target) {
+			return m, nil
+		}
 		m.busy = false
 		if msg.err != nil {
 			m.statusBanner = fmt.Sprintf("Hive Health failed: %v", msg.err)
@@ -383,6 +535,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case servicesMsg:
+		if !m.matchesActiveHive(msg.target) {
+			return m, nil
+		}
 		m.busy = false
 		if msg.err != nil {
 			m.statusBanner = fmt.Sprintf("Service inspection failed: %v", msg.err)
@@ -394,6 +549,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case unitDetailMsg:
+		if !m.matchesActiveHive(msg.target) {
+			return m, nil
+		}
 		m.busy = false
 		if msg.err != nil {
 			m.statusBanner = fmt.Sprintf("Unit inspection failed: %v", msg.err)
@@ -405,6 +563,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case serviceControlMsg:
+		if !m.matchesActiveHive(msg.target) {
+			return m, nil
+		}
 		m.busy = false
 		if msg.err != nil {
 			m.statusBanner = fmt.Sprintf("Service %s on %s failed: %v", msg.action, msg.unit, msg.err)
@@ -415,6 +576,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case dockerLogsMsg:
+		if !m.matchesActiveHive(msg.target) {
+			return m, nil
+		}
 		m.busy = false
 		if msg.err != nil {
 			m.statusBanner = fmt.Sprintf("Docker logs failed: %v", msg.err)
@@ -425,6 +589,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case logsResultMsg:
+		if !m.matchesActiveHive(msg.target) {
+			return m, nil
+		}
+		if msg.source != "" && msg.source != logs.AllSources[m.logSourceIdx] {
+			return m, nil
+		}
 		m.busy = false
 		if msg.err != nil {
 			m.statusBanner = fmt.Sprintf("Log fetch error: %v", msg.err)
@@ -447,12 +617,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case swarmProgressMsg:
+		if msg.runID != 0 && msg.runID != m.swarmRunID {
+			return m, nil
+		}
+		if m.swarmSnap != nil && m.swarmSnap.Done && !msg.snap.Done {
+			return m, nil
+		}
 		snap := msg.snap
 		m.swarmSnap = &snap
 		m.busy = !snap.Done
 		if snap.Done {
+			m.swarmStream = nil
 			m.statusBanner = fmt.Sprintf("Swarm Review finished: %d complete, %d failed, %d skipped, %d proposals",
 				snap.Summary.Completed, snap.Summary.Failed, snap.Summary.Skipped, snap.Summary.TotalProposals)
+			return m, nil
+		}
+		if m.swarmStream != nil {
+			return m, m.swarmStream.wait()
 		}
 		return m, nil
 
@@ -523,10 +704,11 @@ func (m Model) handleTextInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.busy = true
 				m.statusBanner = "Sending instruction to " + bee.DisplayName() + "…"
 				target := *bee
+				beeKey := target.Key()
 				ops := m.ops
 				return m, func() tea.Msg {
 					reply, err := ops.SendInstruction(context.Background(), target, val)
-					return instructionMsg{reply: reply, err: err}
+					return instructionMsg{target: beeKey, reply: reply, err: err}
 				}
 			} else if val != "" {
 				m.detailOutput = "Queued instruction: " + val
@@ -702,6 +884,7 @@ func (m Model) updateSwarmOrBees(key string) (tea.Model, tea.Cmd) {
 		if m.beeCursor >= 0 && m.beeCursor < len(bees) {
 			b := bees[m.beeCursor]
 			m.selectedBee = &b
+			m.busy = false
 			m.prevScreen = m.screen
 			m.screen = screenBeeDetail
 			m.detailCursor = 0
@@ -858,10 +1041,12 @@ func (m Model) updateSelfReview(key string) (tea.Model, tea.Cmd) {
 	case "3":
 		return m.startSwarmReview(swarm.ModeAllReachable)
 	case "x":
-		if m.swarmCoord != nil {
+		if m.swarmCoord != nil && (m.swarmSnap == nil || !m.swarmSnap.Done) {
 			m.swarmCoord.Cancel()
 			snap := m.swarmCoord.Snapshot()
+			snap.Done = true
 			m.swarmSnap = &snap
+			m.swarmStream = nil
 			m.busy = false
 			m.statusBanner = "Swarm Review canceled; completed Bee reviews preserved"
 		}

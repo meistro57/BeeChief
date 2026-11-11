@@ -142,16 +142,32 @@ func Run(ctx context.Context, hive string, exec hosts.Execution, checks ...Check
 		return rep
 	}
 
+	probeExec := exec
 	for _, fn := range checks {
 		cStart := time.Now()
-		res := safeRunCheck(ctx, exec, fn)
+		res := safeRunCheck(ctx, probeExec, fn)
 		if res.Duration == 0 {
 			res.Duration = time.Since(cStart)
 		}
 		rep.Checks = append(rep.Checks, res)
+		if res.Name == "Hive reachability" && res.State == StateFail {
+			probeExec = unreachableExecution{hive: hive}
+		}
 	}
 	rep.Duration = time.Since(start)
 	return rep
+}
+
+type unreachableExecution struct {
+	hive string
+}
+
+func (u unreachableExecution) Run(context.Context, string, ...string) (hosts.Result, error) {
+	return hosts.Result{ExitCode: -1}, &hosts.Error{
+		Hive:    u.hive,
+		Kind:    hosts.KindUnreachable,
+		Command: "hive reachability probe",
+	}
 }
 
 func safeRunCheck(ctx context.Context, exec hosts.Execution, fn CheckFunc) (res CheckResult) {

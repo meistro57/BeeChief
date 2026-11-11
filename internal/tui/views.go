@@ -192,6 +192,7 @@ func (m *Model) cycleActiveBee(forward bool) {
 	}
 	b := all[curIdx]
 	m.selectedBee = &b
+	m.busy = false
 }
 
 func (m Model) activeHive() string {
@@ -223,6 +224,7 @@ func (m *Model) cycleActiveHive(forward bool) {
 	} else {
 		m.hiveIdx = (m.hiveIdx - 1 + n) % n
 	}
+	m.busy = false
 }
 
 func (m Model) currentServicesCount() int {
@@ -248,9 +250,10 @@ func (m *Model) loadSkillsCmd() tea.Cmd {
 	m.busy = true
 	ops := m.ops
 	target := *bee
+	beeKey := target.Key()
 	return func() tea.Msg {
 		rep, err := ops.ListSkills(context.Background(), target)
-		return skillListMsg{rep: rep, err: err}
+		return skillListMsg{target: beeKey, rep: rep, err: err}
 	}
 }
 
@@ -262,9 +265,10 @@ func (m *Model) checkSkillsCmd() tea.Cmd {
 	m.busy = true
 	ops := m.ops
 	target := *bee
+	beeKey := target.Key()
 	return func() tea.Msg {
 		rep, err := ops.CheckSkills(context.Background(), target)
-		return skillCheckMsg{rep: rep, err: err}
+		return skillCheckMsg{target: beeKey, rep: rep, err: err}
 	}
 }
 
@@ -276,9 +280,10 @@ func (m *Model) selfReviewCmd() tea.Cmd {
 	m.busy = true
 	ops := m.ops
 	target := *bee
+	beeKey := target.Key()
 	return func() tea.Msg {
 		rep, err := ops.SelfReview(context.Background(), target)
-		return selfReviewMsg{rep: rep, err: err}
+		return selfReviewMsg{target: beeKey, rep: rep, err: err}
 	}
 }
 
@@ -290,9 +295,10 @@ func (m *Model) loadWorkshopCmd() tea.Cmd {
 	m.busy = true
 	ops := m.ops
 	target := *bee
+	beeKey := target.Key()
 	return func() tea.Msg {
 		rep, err := ops.ListWorkshop(context.Background(), target)
-		return workshopListMsg{rep: rep, err: err}
+		return workshopListMsg{target: beeKey, rep: rep, err: err}
 	}
 }
 
@@ -304,9 +310,10 @@ func (m *Model) showProposalCmd(name string) tea.Cmd {
 	m.busy = true
 	ops := m.ops
 	target := *bee
+	beeKey := target.Key()
 	return func() tea.Msg {
 		prop, err := ops.ShowWorkshopProposal(context.Background(), target, name)
-		return workshopShowMsg{prop: prop, err: err}
+		return workshopShowMsg{target: beeKey, prop: prop, err: err}
 	}
 }
 
@@ -318,9 +325,10 @@ func (m *Model) loadModelStatusCmd() tea.Cmd {
 	m.busy = true
 	ops := m.ops
 	target := *bee
+	beeKey := target.Key()
 	return func() tea.Msg {
 		rep, err := ops.ModelsStatus(context.Background(), target)
-		return modelStatusMsg{rep: rep, err: err}
+		return modelStatusMsg{target: beeKey, rep: rep, err: err}
 	}
 }
 
@@ -333,7 +341,7 @@ func (m *Model) runHiveHealthCmd() tea.Cmd {
 	ops := m.ops
 	return func() tea.Msg {
 		rep, err := ops.RunHiveHealth(context.Background(), hive)
-		return hiveHealthMsg{rep: rep, err: err}
+		return hiveHealthMsg{target: hive, rep: rep, err: err}
 	}
 }
 
@@ -346,7 +354,7 @@ func (m *Model) inspectServicesCmd() tea.Cmd {
 	ops := m.ops
 	return func() tea.Msg {
 		rep, err := ops.InspectServices(context.Background(), hive)
-		return servicesMsg{rep: rep, err: err}
+		return servicesMsg{target: hive, rep: rep, err: err}
 	}
 }
 
@@ -359,7 +367,7 @@ func (m *Model) inspectUnitCmd(unit string) tea.Cmd {
 	ops := m.ops
 	return func() tea.Msg {
 		u, err := ops.InspectSystemdUnit(context.Background(), hive, unit)
-		return unitDetailMsg{unit: u, err: err}
+		return unitDetailMsg{target: hive, unit: u, err: err}
 	}
 }
 
@@ -372,7 +380,7 @@ func (m *Model) controlServiceCmd(unit string, action services.ServiceAction, co
 	ops := m.ops
 	return func() tea.Msg {
 		err := ops.ControlSystemdService(context.Background(), hive, unit, action, confirmed)
-		return serviceControlMsg{unit: unit, action: action, err: err}
+		return serviceControlMsg{target: hive, unit: unit, action: action, err: err}
 	}
 }
 
@@ -385,7 +393,7 @@ func (m *Model) fetchDockerLogsCmd(container string) tea.Cmd {
 	ops := m.ops
 	return func() tea.Msg {
 		out, err := ops.FetchDockerLogs(context.Background(), hive, container, 40)
-		return dockerLogsMsg{container: container, logs: out, err: err}
+		return dockerLogsMsg{target: hive, container: container, logs: out, err: err}
 	}
 }
 
@@ -400,7 +408,7 @@ func (m *Model) fetchLogsCmd() tea.Cmd {
 	target := m.logTarget
 	return func() tea.Msg {
 		res, err := ops.FetchLogs(context.Background(), hive, kind, target, logs.DefaultTail)
-		return logsResultMsg{res: res, err: err}
+		return logsResultMsg{target: hive, source: kind, res: res, err: err}
 	}
 }
 
@@ -429,6 +437,10 @@ func (m *Model) testHiveCmd(h config.Hive) tea.Cmd {
 }
 
 func (m Model) startSwarmReview(mode swarm.Mode) (tea.Model, tea.Cmd) {
+	if m.swarmCoord != nil && (m.swarmSnap == nil || !m.swarmSnap.Done) {
+		m.statusBanner = "Swarm Review already running; press x to cancel"
+		return m, nil
+	}
 	bees := swarm.SelectBees(m.inventory, mode, m.activeBee(), m.activeHive())
 	if len(bees) == 0 {
 		m.statusBanner = "No Bees available for Swarm Review in mode " + string(mode)
@@ -437,20 +449,29 @@ func (m Model) startSwarmReview(mode swarm.Mode) (tea.Model, tea.Cmd) {
 	if m.ops == nil {
 		coord := swarm.NewCoordinator(mode, bees, nil, swarm.DefaultConcurrency, nil)
 		snap := coord.Snapshot()
-		m.swarmCoord = coord
 		m.swarmSnap = &snap
+		m.swarmStream = nil
+		m.busy = false
 		return m, nil
 	}
-	coord := m.ops.StartSwarmReview(mode, bees, nil)
+	m.swarmRunID++
+	runID := m.swarmRunID
+	stream := newSwarmStream(runID, len(bees)*2+8)
+	coord := m.ops.StartSwarmReview(mode, bees, stream.send)
 	snap := coord.Snapshot()
 	m.swarmCoord = coord
 	m.swarmSnap = &snap
+	m.swarmStream = stream
 	m.busy = true
 	m.statusBanner = fmt.Sprintf("Running Swarm Review (%s) across %d Bee(s)…", mode, len(bees))
-	return m, func() tea.Msg {
-		final := coord.Run(context.Background())
-		return swarmProgressMsg{snap: final}
-	}
+	return m, tea.Batch(
+		func() tea.Msg {
+			final := coord.Run(context.Background())
+			stream.close()
+			return swarmProgressMsg{runID: runID, snap: final}
+		},
+		stream.wait(),
+	)
 }
 
 // View implements tea.Model.

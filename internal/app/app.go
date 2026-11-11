@@ -258,11 +258,27 @@ func (b *backend) ModelsStatus(ctx context.Context, bee agents.Bee) (*openclaw.M
 }
 
 func (b *backend) SendInstruction(ctx context.Context, bee agents.Bee, message string) (string, error) {
+	start := time.Now()
 	exec, err := b.execFor(bee.Hive)
 	if err != nil {
 		return "", err
 	}
-	return openclaw.NewClient(exec).SendInstruction(ctx, bee.ID, message)
+	reply, err := openclaw.NewClient(exec).SendInstruction(ctx, bee.ID, message)
+	lvl := events.LevelInfo
+	sum := "instruction sent"
+	if err != nil {
+		lvl = events.LevelError
+		sum = err.Error()
+	}
+	_ = b.events.Record(events.Event{
+		Kind:       events.KindInstruction,
+		Level:      lvl,
+		Hive:       bee.Hive,
+		Bee:        bee.ID,
+		Summary:    sum,
+		DurationMs: time.Since(start).Milliseconds(),
+	})
+	return reply, err
 }
 
 func (b *backend) RunHiveHealth(ctx context.Context, hive string) (*diagnostics.HiveHealthReport, error) {
@@ -375,7 +391,40 @@ func (b *backend) StartSwarmReview(mode swarm.Mode, bees []agents.Bee, onProgres
 	}
 	b.mu.RUnlock()
 	reviewer := swarm.NewOpenClawReviewer(execCopy)
-	return swarm.NewCoordinator(mode, bees, reviewer, swarm.DefaultConcurrency, onProgress)
+	var recordOnce sync.Once
+	wrapped := func(snap swarm.Snapshot) {
+		if onProgress != nil {
+			onProgress(snap)
+		}
+		if !snap.Done {
+			return
+		}
+		recordOnce.Do(func() {
+			lvl := events.LevelInfo
+			if snap.Summary.Failed > 0 {
+				lvl = events.LevelWarn
+			}
+			hive := ""
+			if len(bees) > 0 {
+				hive = bees[0].Hive
+				for _, b := range bees {
+					if b.Hive != hive {
+						hive = ""
+						break
+					}
+				}
+			}
+			_ = b.events.Record(events.Event{
+				Kind:  events.KindSwarmReview,
+				Level: lvl,
+				Hive:  hive,
+				Summary: fmt.Sprintf("Swarm Review (%s): complete=%d failed=%d skipped=%d proposals=%d",
+					mode, snap.Summary.Completed, snap.Summary.Failed, snap.Summary.Skipped, snap.Summary.TotalProposals),
+				DurationMs: time.Since(snap.StartedAt).Milliseconds(),
+			})
+		})
+	}
+	return swarm.NewCoordinator(mode, bees, reviewer, swarm.DefaultConcurrency, wrapped)
 }
 
 func (b *backend) ExportHoneyReport(ctx context.Context, inv *agents.Inventory, path string) (string, error) {

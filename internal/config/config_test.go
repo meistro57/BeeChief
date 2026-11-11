@@ -211,3 +211,75 @@ hosts:
 		t.Errorf("expected ErrUnsupportedVersion for version 99, got %v", err)
 	}
 }
+
+func TestSaveReplacesAtomicallyAndCleansTempFiles(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hosts.yaml")
+	cfg := Default()
+	if err := cfg.AddHive(Hive{Name: "local", Type: TypeLocal}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(path, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	assertNoTempFiles(t, dir)
+
+	dirPath := filepath.Join(dir, "config-dir")
+	if err := os.Mkdir(dirPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(dirPath, cfg); err == nil {
+		t.Fatal("expected Save to fail when the target is a directory")
+	}
+	if info, err := os.Stat(dirPath); err != nil || !info.IsDir() {
+		t.Fatalf("target directory was disturbed: %v %v", info, err)
+	}
+	assertNoTempFiles(t, dir)
+}
+
+func TestSaveFollowsExistingSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real-hosts.yaml")
+	link := filepath.Join(dir, "hosts.yaml")
+	if err := os.WriteFile(target, []byte("version: 1\nhives: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	cfg := Default()
+	if err := cfg.AddHive(Hive{Name: "local", Type: TypeLocal}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(link, cfg); err != nil {
+		t.Fatalf("Save through symlink: %v", err)
+	}
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Error("Save replaced the symlink instead of its target")
+	}
+	loaded, err := Load(target)
+	if err != nil {
+		t.Fatalf("Load target: %v", err)
+	}
+	if len(loaded.Hives) != 1 || loaded.Hives[0].Name != "local" {
+		t.Errorf("unexpected target contents: %+v", loaded)
+	}
+	assertNoTempFiles(t, dir)
+}
+
+func assertNoTempFiles(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".hosts-") {
+			t.Errorf("temporary config file left behind: %s", entry.Name())
+		}
+	}
+}

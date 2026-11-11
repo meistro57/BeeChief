@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/meistro57/beechief/internal/hosts"
 )
@@ -92,5 +93,27 @@ func TestPanicIsolationAndNilExec(t *testing.T) {
 	}
 	if rep2.Checks[0].State != StateFail || rep2.Checks[1].State != StatePass {
 		t.Errorf("unexpected states after panic isolation: %+v", rep2.Checks)
+	}
+}
+
+func TestRunShortCircuitsAfterUnreachableProbe(t *testing.T) {
+	calls := 0
+	exec := &scriptedExec{handler: func(string, ...string) (hosts.Result, error) {
+		calls++
+		return hosts.Result{ExitCode: -1}, &hosts.Error{Hive: "dead", Kind: hosts.KindUnreachable}
+	}}
+	start := time.Now()
+	rep := Run(context.Background(), "dead", exec)
+	if calls != 1 {
+		t.Errorf("expected a single reachability probe, got %d calls", calls)
+	}
+	if len(rep.Checks) != 11 {
+		t.Fatalf("checks count: got %d, want 11", len(rep.Checks))
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Errorf("unreachable pass took too long: %v", time.Since(start))
+	}
+	if rep.Checks[0].State != StateFail {
+		t.Errorf("first check should fail reachability, got %+v", rep.Checks[0])
 	}
 }
